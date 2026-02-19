@@ -28,6 +28,38 @@ class ApiError extends Error {
   }
 }
 
+type OpenAiErrorLike = {
+  name?: string;
+  message?: string;
+  status?: number;
+  code?: string;
+  error?: {
+    code?: string;
+    message?: string;
+  };
+};
+
+function isTimeoutError(error: OpenAiErrorLike): boolean {
+  const name = error.name?.toLowerCase() ?? "";
+  const message = error.message?.toLowerCase() ?? "";
+  const status = error.status;
+
+  return (
+    name.includes("timeout") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    status === 408
+  );
+}
+
+function isModelNotFoundError(error: OpenAiErrorLike): boolean {
+  const status = error.status;
+  const message = error.message?.toLowerCase() ?? "";
+  const code = error.code ?? error.error?.code;
+
+  return status === 404 && (message.includes("model") || code === "model_not_found");
+}
+
 export async function POST(request: NextRequest) {
   try {
     const clientIp = getClientIp(request.headers);
@@ -59,7 +91,7 @@ export async function POST(request: NextRequest) {
     const messageLength = message.length;
 
     if (!openAiApiKey) {
-      throw new ApiError(500, "Falta OPENAI_API_KEY en variables de entorno.");
+      throw new ApiError(500, "Missing OPENAI_API_KEY");
     }
 
     const openai = new OpenAI({ apiKey: openAiApiKey });
@@ -160,6 +192,12 @@ export async function POST(request: NextRequest) {
     let reply = "";
     let openAiDurationMs = 0;
     const openAiStart = Date.now();
+    const hasOpenAiApiKey = Boolean(openAiApiKey);
+
+    console.info("[api/chat] OpenAI request started", {
+      model: openAiModel,
+      hasOpenAiApiKey,
+    });
 
     try {
       const aiResponse = await openai.responses.create({
@@ -177,9 +215,29 @@ export async function POST(request: NextRequest) {
       });
       openAiDurationMs = Date.now() - openAiStart;
 
+      console.info("[api/chat] OpenAI request completed", {
+        model: openAiModel,
+        hasOpenAiApiKey,
+        openAiDurationMs,
+      });
+
       reply = aiResponse.output_text?.trim() ?? "";
-    } catch {
+    } catch (error) {
       openAiDurationMs = Date.now() - openAiStart;
+
+      const openAiError = error as OpenAiErrorLike;
+      const errorStatus =
+        typeof openAiError.status === "number" ? openAiError.status : undefined;
+
+      console.error("[api/chat] OpenAI request failed", {
+        model: openAiModel,
+        hasOpenAiApiKey,
+        openAiDurationMs,
+        errorName: openAiError.name,
+        errorMessage: openAiError.message,
+        errorStatus,
+      });
+
       logChatRequest({
         ip: clientIp,
         userId: userIdForLog,
@@ -187,6 +245,19 @@ export async function POST(request: NextRequest) {
         model: openAiModel,
         openAiDurationMs,
       });
+
+      if (isTimeoutError(openAiError)) {
+        throw new ApiError(504, "OpenAI timeout");
+      }
+
+      if (errorStatus === 401 || errorStatus === 403) {
+        throw new ApiError(502, "OpenAI auth error");
+      }
+
+      if (isModelNotFoundError(openAiError)) {
+        throw new ApiError(502, `Model not found: ${openAiModel}`);
+      }
+
       throw new ApiError(502, "Error generando respuesta con OpenAI.");
     }
 
