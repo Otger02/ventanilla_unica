@@ -1,3 +1,9 @@
 export function isDemoModeEnabled() {
-  return process.env.DEMO_MODE === "true";
+  const rawValue = process.env.DEMO_MODE;
+  if (!rawValue) {
+    return false;
+  }
+
+  const normalizedValue = rawValue.trim().toLowerCase();
+  return normalizedValue === "true" || normalizedValue === "1" || normalizedValue === "yes";
 }

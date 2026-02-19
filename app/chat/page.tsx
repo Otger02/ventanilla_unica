@@ -5,7 +5,9 @@ import { isDemoModeEnabled } from "@/lib/demo-mode";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 export default async function ChatPage() {
+  const demoModeRawEnv = process.env.DEMO_MODE ?? "(undefined)";
   const demoMode = isDemoModeEnabled();
+  const showDemoDebug = process.env.NODE_ENV === "development";
   const supabase = await createServerSupabaseClient();
   const {
     data: { user },
@@ -15,5 +17,11 @@ export default async function ChatPage() {
     redirect("/login");
   }
 
-  return <ChatClient demoMode={demoMode} />;
+  return (
+    <ChatClient
+      demoMode={demoMode}
+      showDemoDebug={showDemoDebug}
+      demoModeRawEnv={demoModeRawEnv}
+    />
+  );
 }

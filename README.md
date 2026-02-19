@@ -66,6 +66,18 @@ Abre `http://localhost:3000/chat`.
 - En demo se muestra una banda superior `DEMO MODE`.
 - Con `DEMO_MODE=false`, el comportamiento normal exige login.
 - Flujo recomendado para demo en Wix: `Wix -> boton -> abrir https://app.tudominio.com/chat`.
+- Valores aceptados para activar DEMO_MODE: `true`, `1`, `yes`.
+
+### Verificar DEMO_MODE en producción (Vercel)
+
+1. En Vercel Project Settings -> Environment Variables, define `DEMO_MODE=true` (o `1` / `yes`) para el entorno deseado.
+2. Haz redeploy del proyecto para que el valor quede aplicado en runtime.
+3. Prueba `https://tu-dominio/chat`:
+  - Si DEMO_MODE está activo, no debe redirigir a `/login`.
+  - Si DEMO_MODE está inactivo, mantiene auth normal y redirige a `/login` sin sesión.
+4. En desarrollo (`NODE_ENV=development`) `/chat` muestra un bloque `DEMO DEBUG` con:
+  - `process.env.DEMO_MODE` leído en servidor
+  - resultado de `demoMode()`
 
 ## Documentos (Storage)
 

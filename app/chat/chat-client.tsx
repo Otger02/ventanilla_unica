@@ -12,6 +12,8 @@ type ChatMessage = {
 
 type ChatClientProps = {
   demoMode: boolean;
+  showDemoDebug: boolean;
+  demoModeRawEnv: string;
 };
 
 const exampleQuestions = [
@@ -23,7 +25,11 @@ const exampleQuestions = [
   "¿Qué documentos debería guardar?",
 ];
 
-export function ChatClient({ demoMode }: ChatClientProps) {
+export function ChatClient({
+  demoMode,
+  showDemoDebug,
+  demoModeRawEnv,
+}: ChatClientProps) {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -104,6 +110,13 @@ export function ChatClient({ demoMode }: ChatClientProps) {
       {demoMode ? (
         <div className="rounded-md border border-amber-400 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
           DEMO MODE
+        </div>
+      ) : null}
+
+      {showDemoDebug ? (
+        <div className="mt-2 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-100">
+          DEMO DEBUG → process.env.DEMO_MODE: {demoModeRawEnv} | demoMode():{" "}
+          {String(demoMode)}
         </div>
       ) : null}
 
