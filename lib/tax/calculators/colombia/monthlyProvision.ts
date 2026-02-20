@@ -2,6 +2,7 @@ type UserTaxProfileCO = {
   persona_type: "natural" | "juridica" | "unknown";
   regimen: "simple" | "ordinario" | "unknown";
   vat_responsible: "yes" | "no" | "unknown";
+  provision_style: "conservative" | "balanced" | "aggressive";
 };
 
 type MonthlyTaxInputsCO = {
@@ -17,9 +18,18 @@ type MonthlyProvisionSuccess = {
   ok: true;
   breakdown: {
     ivaProvision: number;
+    ivaMethod: "vat_collected_as_proxy";
+    ivaNote: string;
     base: number;
     rentaProvision: number;
+    rentaMethod: "simplified_monthly_provision";
+    rentaRateBase: number;
+    provisionStyle: "conservative" | "balanced" | "aggressive";
+    provisionFactor: number;
+    rentaNote: string;
+    withholdingsNote: string;
     totalProvision: number;
+    cashAfterProvision: number;
     riskLevel: ProvisionRiskLevel;
   };
 };
@@ -42,25 +52,28 @@ export function calculateMonthlyProvisionCO(
     };
   }
 
-  const ivaProvision =
-    profile.vat_responsible === "yes"
-      ? Math.max(inputs.vat_collected_cop - inputs.withholdings_cop, 0)
-      : 0;
+  const ivaProvision = profile.vat_responsible === "yes" ? inputs.vat_collected_cop : 0;
 
   const base = Math.max(inputs.income_cop - inputs.deductible_expenses_cop, 0);
 
-  // TODO: Aproximacion simplificada MVP. Reemplazar por reglas tributarias completas.
-  const rentaRate =
+  const rentaRateBase =
     profile.regimen === "simple" ? 0.05 : profile.regimen === "ordinario" ? 0.1 : 0.08;
+  const provisionFactor =
+    profile.provision_style === "conservative"
+      ? 1.25
+      : profile.provision_style === "aggressive"
+        ? 0.75
+        : 1.0;
 
-  const rentaProvision = base * rentaRate;
+  const rentaProvision = base * rentaRateBase * provisionFactor;
   const totalProvision = rentaProvision + ivaProvision;
+  const cashAfterProvision = inputs.income_cop - inputs.deductible_expenses_cop - totalProvision;
 
   let riskLevel: ProvisionRiskLevel = "low";
 
-  if (totalProvision > 0 && inputs.income_cop === 0) {
+  if (cashAfterProvision < 0) {
     riskLevel = "high";
-  } else if (totalProvision > 0 && base < 0.2 * inputs.income_cop) {
+  } else if (cashAfterProvision < 0.15 * inputs.income_cop) {
     riskLevel = "medium";
   }
 
@@ -68,9 +81,21 @@ export function calculateMonthlyProvisionCO(
     ok: true,
     breakdown: {
       ivaProvision,
+      ivaMethod: "vat_collected_as_proxy",
+      ivaNote:
+        "Estimación simplificada: IVA cobrado del mes como provisión. No aplica descuentos por retenciones sin clasificar.",
       base,
       rentaProvision,
+      rentaMethod: "simplified_monthly_provision",
+      rentaRateBase,
+      provisionStyle: profile.provision_style,
+      provisionFactor,
+      rentaNote:
+        "Estimación simplificada para separar caja; no es cálculo definitivo de impuesto.",
+      withholdingsNote:
+        "Retenciones pueden corresponder a renta/IVA/ICA; se usan para ajuste posterior cuando se clasifiquen.",
       totalProvision,
+      cashAfterProvision,
       riskLevel,
     },
   };

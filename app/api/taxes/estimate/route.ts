@@ -8,6 +8,7 @@ type UserTaxProfileRow = {
   persona_type: "natural" | "juridica" | "unknown";
   regimen: "simple" | "ordinario" | "unknown";
   vat_responsible: "yes" | "no" | "unknown";
+  provision_style: "conservative" | "balanced" | "aggressive";
   municipality: string | null;
 };
 
@@ -39,7 +40,7 @@ export async function GET() {
 
     const { data: profileData, error: profileError } = await supabase
       .from("user_tax_profile_co")
-      .select("user_id, persona_type, regimen, vat_responsible, municipality")
+      .select("user_id, persona_type, regimen, vat_responsible, provision_style, municipality")
       .eq("user_id", user.id)
       .maybeSingle();
 
@@ -48,10 +49,7 @@ export async function GET() {
     }
 
     if (!profileData) {
-      return NextResponse.json(
-        { error: "Falta perfil fiscal. Guarda tu perfil antes de estimar." },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Completa tus datos del mes para calcular." }, { status: 400 });
     }
 
     const { data: monthlyInputData, error: monthlyInputError } = await supabase
@@ -69,10 +67,7 @@ export async function GET() {
     }
 
     if (!monthlyInputData) {
-      return NextResponse.json(
-        { error: "Faltan datos del mes actual. Guarda ingresos/gastos del mes antes de estimar." },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Completa tus datos del mes para calcular." }, { status: 400 });
     }
 
     const profile = profileData as UserTaxProfileRow;
@@ -93,6 +88,7 @@ export async function GET() {
         persona_type: profile.persona_type,
         regimen: profile.regimen,
         vat_responsible: profile.vat_responsible,
+        provision_style: profile.provision_style,
         municipality: profile.municipality,
       },
       inputs: {

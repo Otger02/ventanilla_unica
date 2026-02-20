@@ -75,6 +75,15 @@ Abre `http://localhost:3000/chat`.
 - Con `DEMO_MODE=false`, `/chat` exige sesión activa y redirige a `/login` si no hay sesión.
 - `DEMO_MODE=true` se considera solo para desarrollo local (`NODE_ENV=development`).
 
+## Provisión mensual (MVP)
+
+- El cálculo de provisión mensual es una estimación simplificada (MVP), orientativa y no es liquidación legal definitiva.
+- Perfil fiscal incluye `provision_style` con tres opciones:
+  - `conservative`: separa más caja para provisión
+  - `balanced`: punto medio (default)
+  - `aggressive`: separa menos caja para provisión
+- Usa `/api/taxes/estimate` para obtener `totalProvision`, `rentaProvision`, `ivaProvision`, `cashAfterProvision` y nivel de riesgo.
+
 ### Verificar DEMO_MODE en desarrollo
 
 1. En `.env.local`, define `DEMO_MODE=true` (o `1` / `yes`).

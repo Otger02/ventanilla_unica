@@ -24,6 +24,7 @@ type UserTaxProfileRow = {
   persona_type: "natural" | "juridica" | "unknown";
   regimen: "simple" | "ordinario" | "unknown";
   vat_responsible: "yes" | "no" | "unknown";
+  provision_style: "conservative" | "balanced" | "aggressive";
   municipality: string | null;
 };
 
@@ -47,6 +48,7 @@ type CurrentTaxCalculation =
         persona_type: "natural" | "juridica" | "unknown";
         regimen: "simple" | "ordinario" | "unknown";
         vat_responsible: "yes" | "no" | "unknown";
+        provision_style: "conservative" | "balanced" | "aggressive";
         municipality: string | null;
       };
       inputs: {
@@ -158,7 +160,7 @@ async function getCurrentTaxCalculation(
 
   const { data: profileData, error: profileError } = await supabase
     .from("user_tax_profile_co")
-    .select("persona_type, regimen, vat_responsible, municipality")
+    .select("persona_type, regimen, vat_responsible, provision_style, municipality")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -228,6 +230,7 @@ async function getCurrentTaxCalculation(
       persona_type: profile.persona_type,
       regimen: profile.regimen,
       vat_responsible: profile.vat_responsible,
+      provision_style: profile.provision_style,
       municipality: profile.municipality,
     },
     inputs: {

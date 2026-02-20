@@ -20,6 +20,7 @@ type TaxProfileResponse = {
   profile: {
     regimen: "simple" | "ordinario" | "unknown";
     vat_responsible: "yes" | "no" | "unknown";
+    provision_style: "conservative" | "balanced" | "aggressive";
     municipality: string | null;
   } | null;
 };
@@ -40,6 +41,7 @@ type TaxEstimateResponse = {
     totalProvision: number;
     rentaProvision: number;
     ivaProvision: number;
+    cashAfterProvision: number;
     riskLevel: "high" | "medium" | "low";
   };
 };
@@ -77,6 +79,9 @@ export function ChatClient({
   const [estimate, setEstimate] = useState<TaxEstimateResponse["breakdown"] | null>(null);
   const [regimen, setRegimen] = useState<"simple" | "ordinario" | "unknown">("unknown");
   const [vatResponsible, setVatResponsible] = useState<"yes" | "no" | "unknown">("unknown");
+  const [provisionStyle, setProvisionStyle] = useState<
+    "conservative" | "balanced" | "aggressive"
+  >("balanced");
   const [municipality, setMunicipality] = useState("");
   const [incomeCop, setIncomeCop] = useState("0");
   const [deductibleExpensesCop, setDeductibleExpensesCop] = useState("0");
@@ -147,6 +152,7 @@ export function ChatClient({
         if (profileData.profile) {
           setRegimen(profileData.profile.regimen ?? "unknown");
           setVatResponsible(profileData.profile.vat_responsible ?? "unknown");
+          setProvisionStyle(profileData.profile.provision_style ?? "balanced");
           setMunicipality(profileData.profile.municipality ?? "");
         }
 
@@ -187,6 +193,18 @@ export function ChatClient({
     }
 
     return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+  }
+
+  function getRiskLabelEs(riskLevel: "high" | "medium" | "low"): string {
+    if (riskLevel === "high") {
+      return "Alto";
+    }
+
+    if (riskLevel === "medium") {
+      return "Medio";
+    }
+
+    return "Bajo";
   }
 
   async function handleSignOut() {
@@ -290,6 +308,7 @@ export function ChatClient({
           body: JSON.stringify({
             regimen,
             vat_responsible: vatResponsible,
+            provision_style: provisionStyle,
             municipality: municipality.trim() || null,
           }),
         }),
@@ -400,6 +419,10 @@ export function ChatClient({
                 <span className="text-zinc-600 dark:text-zinc-300">IVA</span>
                 <span>{formatCop(estimate.ivaProvision)}</span>
               </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-600 dark:text-zinc-300">Caja después de provisión</span>
+                <span>{formatCop(estimate.cashAfterProvision)}</span>
+              </div>
               <div className="flex items-center justify-between gap-2 pt-1">
                 <span className="text-zinc-600 dark:text-zinc-300">Riesgo</span>
                 <span
@@ -407,7 +430,7 @@ export function ChatClient({
                     estimate.riskLevel,
                   )}`}
                 >
-                  {estimate.riskLevel}
+                  {getRiskLabelEs(estimate.riskLevel)}
                 </span>
               </div>
               <p className="pt-1 text-xs text-zinc-500 dark:text-zinc-400">
@@ -532,6 +555,24 @@ export function ChatClient({
             <option value="unknown">Sin definir</option>
             <option value="yes">Si</option>
             <option value="no">No</option>
+          </select>
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">
+            Estilo de provisión
+          </label>
+          <select
+            value={provisionStyle}
+            onChange={(event) =>
+              setProvisionStyle(
+                event.target.value as "conservative" | "balanced" | "aggressive",
+              )
+            }
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          >
+            <option value="conservative">Conservador</option>
+            <option value="balanced">Balanceado</option>
+            <option value="aggressive">Agresivo</option>
           </select>
 
           <label className="block text-xs text-zinc-600 dark:text-zinc-300">Municipio</label>
