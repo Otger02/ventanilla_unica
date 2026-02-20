@@ -25,6 +25,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=tu_supabase_anon_key
 OPENAI_API_KEY=tu_openai_api_key
 OPENAI_MODEL=gpt-5
 DEMO_MODE=false
+DEBUG_TAX=false
 WIX_EMBED_ORIGIN=
 ```
 
@@ -68,11 +69,17 @@ Abre `http://localhost:3000/chat`.
 - Flujo recomendado para demo en Wix: `Wix -> boton -> abrir https://app.tudominio.com/chat`.
 - Valores aceptados para activar DEMO_MODE: `true`, `1`, `yes`.
 
-### Verificar DEMO_MODE en producción (Vercel)
+## Modo producción
 
-1. En Vercel Project Settings -> Environment Variables, define `DEMO_MODE=true` (o `1` / `yes`) para el entorno deseado.
-2. Haz redeploy del proyecto para que el valor quede aplicado en runtime.
-3. Prueba `https://tu-dominio/chat`:
+- En producción, `DEMO_MODE` debe estar desactivado (`false`).
+- Con `DEMO_MODE=false`, `/chat` exige sesión activa y redirige a `/login` si no hay sesión.
+- `DEMO_MODE=true` se considera solo para desarrollo local (`NODE_ENV=development`).
+
+### Verificar DEMO_MODE en desarrollo
+
+1. En `.env.local`, define `DEMO_MODE=true` (o `1` / `yes`).
+2. Ejecuta la app en local (`npm run dev`).
+3. Prueba `http://localhost:3000/chat`:
   - Si DEMO_MODE está activo, no debe redirigir a `/login`.
   - Si DEMO_MODE está inactivo, mantiene auth normal y redirige a `/login` sin sesión.
 4. En desarrollo (`NODE_ENV=development`) `/chat` muestra un bloque `DEMO DEBUG` con:
