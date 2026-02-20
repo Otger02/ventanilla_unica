@@ -173,6 +173,18 @@ Notas:
 - Si `DEMO_MODE=false`, el endpoint requiere sesion activa y guarda `user_id` del usuario.
 - Si `DEMO_MODE=true`, permite uso sin sesion y guarda `user_id` en `null`.
 
+### `GET /api/taxes/history?months=6`
+
+- Devuelve histórico simple de los últimos N meses del usuario autenticado.
+- Parámetro `months`:
+  - opcional, default `6`
+  - rango permitido `1..24`
+- Respuesta `200`:
+  - `{ items: Array<{ year, month, income_cop, deductible_expenses_cop, totalProvision, cashAfterProvision, riskLevel }> }`
+  - puede devolver arreglo parcial si faltan meses cargados.
+- Respuesta `400` si `months` es inválido.
+- Respuesta `401` si no hay sesión.
+
 ## Rate limiting (MVP)
 
 - `POST /api/chat` tiene rate limit basico por IP.

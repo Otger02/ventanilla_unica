@@ -46,6 +46,20 @@ type TaxEstimateResponse = {
   };
 };
 
+type TaxHistoryItem = {
+  year: number;
+  month: number;
+  income_cop: number;
+  deductible_expenses_cop: number;
+  totalProvision: number;
+  cashAfterProvision: number;
+  riskLevel: "high" | "medium" | "low";
+};
+
+type TaxHistoryResponse = {
+  items: TaxHistoryItem[];
+};
+
 const exampleQuestions = [
   "¿Cuánto debo provisionar para impuestos este mes?",
   "¿Qué gastos puedo deducir como independiente?",
@@ -77,6 +91,10 @@ export function ChatClient({
   const [isLoadingEstimate, setIsLoadingEstimate] = useState(true);
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [estimate, setEstimate] = useState<TaxEstimateResponse["breakdown"] | null>(null);
+  const [historyMonths, setHistoryMonths] = useState<6 | 12>(6);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyItems, setHistoryItems] = useState<TaxHistoryItem[]>([]);
   const [regimen, setRegimen] = useState<"simple" | "ordinario" | "unknown">("unknown");
   const [vatResponsible, setVatResponsible] = useState<"yes" | "no" | "unknown">("unknown");
   const [provisionStyle, setProvisionStyle] = useState<
@@ -92,6 +110,31 @@ export function ChatClient({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isSending]);
+
+  async function loadHistory(months: 6 | 12) {
+    setIsLoadingHistory(true);
+    setHistoryError(null);
+
+    try {
+      const response = await fetch(`/api/taxes/history?months=${months}`, { method: "GET" });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const errorMessage =
+          (data as { error?: string }).error || "No se pudo cargar el histórico.";
+        throw new Error(errorMessage);
+      }
+
+      const parsed = data as TaxHistoryResponse;
+      setHistoryItems(parsed.items ?? []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo cargar el histórico.";
+      setHistoryItems([]);
+      setHistoryError(message);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }
 
   useEffect(() => {
     async function loadEstimate() {
@@ -173,7 +216,8 @@ export function ChatClient({
 
     void loadEstimate();
     void loadTaxData();
-  }, [currentMonth, currentYear]);
+    void loadHistory(historyMonths);
+  }, [currentMonth, currentYear, historyMonths]);
 
   function formatCop(value: number): string {
     return new Intl.NumberFormat("es-CO", {
@@ -205,6 +249,11 @@ export function ChatClient({
     }
 
     return "Bajo";
+  }
+
+  function getMonthLabel(year: number, month: number): string {
+    const date = new Date(year, month - 1, 1);
+    return new Intl.DateTimeFormat("es-CO", { month: "short", year: "2-digit" }).format(date);
   }
 
   async function handleSignOut() {
@@ -359,6 +408,27 @@ export function ChatClient({
         setEstimate(null);
         setEstimateError("No se pudo cargar la provisión estimada.");
       }
+
+      try {
+        const historyResponse = await fetch(`/api/taxes/history?months=${historyMonths}`, {
+          method: "GET",
+        });
+        const historyData = await historyResponse.json().catch(() => ({}));
+
+        if (historyResponse.ok) {
+          const parsedHistoryData = historyData as TaxHistoryResponse;
+          setHistoryItems(parsedHistoryData.items ?? []);
+          setHistoryError(null);
+        } else {
+          const errorMessage =
+            (historyData as { error?: string }).error || "No se pudo cargar el histórico.";
+          setHistoryItems([]);
+          setHistoryError(errorMessage);
+        }
+      } catch {
+        setHistoryItems([]);
+        setHistoryError("No se pudo cargar el histórico.");
+      }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "No se pudieron guardar los datos fiscales.";
@@ -443,6 +513,117 @@ export function ChatClient({
             <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
               {estimateError || "Completa tus datos del mes para calcular."}
             </p>
+          ) : null}
+        </div>
+
+        <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-base font-semibold">Histórico</h2>
+            <select
+              value={historyMonths}
+              onChange={(event) => setHistoryMonths(Number(event.target.value) as 6 | 12)}
+              className="rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              <option value={6}>6 meses</option>
+              <option value={12}>12 meses</option>
+            </select>
+          </div>
+
+          {isLoadingHistory ? (
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Cargando histórico...</p>
+          ) : null}
+
+          {!isLoadingHistory && historyError ? (
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">{historyError}</p>
+          ) : null}
+
+          {!isLoadingHistory && !historyError && historyItems.length === 0 ? (
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+              No hay meses suficientes para mostrar tendencia.
+            </p>
+          ) : null}
+
+          {!isLoadingHistory && !historyError && historyItems.length > 0 ? (
+            <>
+              <div className="mt-3 space-y-2">
+                {historyItems.map((item) => {
+                  const maxValue = Math.max(
+                    1,
+                    ...historyItems.flatMap((row) => [
+                      row.income_cop,
+                      row.totalProvision,
+                      Math.max(row.cashAfterProvision, 0),
+                    ]),
+                  );
+                  const incomeWidth = Math.max((item.income_cop / maxValue) * 100, 2);
+                  const provisionWidth = Math.max((item.totalProvision / maxValue) * 100, 2);
+                  const cashWidth = Math.max((Math.max(item.cashAfterProvision, 0) / maxValue) * 100, 2);
+
+                  return (
+                    <div key={`${item.year}-${item.month}`}>
+                      <p className="mb-1 text-xs text-zinc-500 dark:text-zinc-400">
+                        {getMonthLabel(item.year, item.month)}
+                      </p>
+                      <div className="space-y-1">
+                        <div className="h-1.5 w-full rounded bg-zinc-100 dark:bg-zinc-800">
+                          <div className="h-1.5 rounded bg-sky-500" style={{ width: `${incomeWidth}%` }} />
+                        </div>
+                        <div className="h-1.5 w-full rounded bg-zinc-100 dark:bg-zinc-800">
+                          <div
+                            className="h-1.5 rounded bg-amber-500"
+                            style={{ width: `${provisionWidth}%` }}
+                          />
+                        </div>
+                        <div className="h-1.5 w-full rounded bg-zinc-100 dark:bg-zinc-800">
+                          <div
+                            className="h-1.5 rounded bg-emerald-500"
+                            style={{ width: `${cashWidth}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Azul: ingresos · Ámbar: provisión · Verde: disponible
+                </p>
+              </div>
+
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-[720px] text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-200 text-zinc-600 dark:border-zinc-800 dark:text-zinc-300">
+                      <th className="px-2 py-2 font-medium">Mes</th>
+                      <th className="px-2 py-2 font-medium">Ingresos</th>
+                      <th className="px-2 py-2 font-medium">Gastos</th>
+                      <th className="px-2 py-2 font-medium">Provisión</th>
+                      <th className="px-2 py-2 font-medium">Disponible</th>
+                      <th className="px-2 py-2 font-medium">Riesgo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyItems.map((item) => (
+                      <tr key={`row-${item.year}-${item.month}`} className="border-b border-zinc-100 dark:border-zinc-900">
+                        <td className="px-2 py-2">{getMonthLabel(item.year, item.month)}</td>
+                        <td className="px-2 py-2">{formatCop(item.income_cop)}</td>
+                        <td className="px-2 py-2">{formatCop(item.deductible_expenses_cop)}</td>
+                        <td className="px-2 py-2">{formatCop(item.totalProvision)}</td>
+                        <td className="px-2 py-2">{formatCop(item.cashAfterProvision)}</td>
+                        <td className="px-2 py-2">
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-xs font-medium ${getRiskBadgeClasses(
+                              item.riskLevel,
+                            )}`}
+                          >
+                            {getRiskLabelEs(item.riskLevel)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           ) : null}
         </div>
 
