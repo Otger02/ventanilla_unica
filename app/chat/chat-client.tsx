@@ -16,6 +16,34 @@ type ChatClientProps = {
   demoModeRawEnv: string;
 };
 
+type TaxProfileResponse = {
+  profile: {
+    regimen: "simple" | "ordinario" | "unknown";
+    vat_responsible: "yes" | "no" | "unknown";
+    municipality: string | null;
+  } | null;
+};
+
+type MonthlyInputResponse = {
+  input: {
+    year: number;
+    month: number;
+    income_cop: number;
+    deductible_expenses_cop: number;
+    withholdings_cop: number;
+    vat_collected_cop: number;
+  } | null;
+};
+
+type TaxEstimateResponse = {
+  breakdown: {
+    totalProvision: number;
+    rentaProvision: number;
+    ivaProvision: number;
+    riskLevel: "high" | "medium" | "low";
+  };
+};
+
 const exampleQuestions = [
   "¿Cuánto debo provisionar para impuestos este mes?",
   "¿Qué gastos puedo deducir como independiente?",
@@ -30,17 +58,136 @@ export function ChatClient({
   showDemoDebug,
   demoModeRawEnv,
 }: ChatClientProps) {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isLoadingTaxData, setIsLoadingTaxData] = useState(true);
+  const [isSavingTaxData, setIsSavingTaxData] = useState(false);
+  const [taxError, setTaxError] = useState<string | null>(null);
+  const [taxSuccess, setTaxSuccess] = useState<string | null>(null);
+  const [isLoadingEstimate, setIsLoadingEstimate] = useState(true);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<TaxEstimateResponse["breakdown"] | null>(null);
+  const [regimen, setRegimen] = useState<"simple" | "ordinario" | "unknown">("unknown");
+  const [vatResponsible, setVatResponsible] = useState<"yes" | "no" | "unknown">("unknown");
+  const [municipality, setMunicipality] = useState("");
+  const [incomeCop, setIncomeCop] = useState("0");
+  const [deductibleExpensesCop, setDeductibleExpensesCop] = useState("0");
+  const [withholdingsCop, setWithholdingsCop] = useState("0");
+  const [vatCollectedCop, setVatCollectedCop] = useState("0");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isSending]);
+
+  useEffect(() => {
+    async function loadEstimate() {
+      setIsLoadingEstimate(true);
+      setEstimateError(null);
+
+      try {
+        const response = await fetch("/api/taxes/estimate", { method: "GET" });
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok) {
+          const estimateData = data as TaxEstimateResponse;
+          setEstimate(estimateData.breakdown);
+          return;
+        }
+
+        if (response.status === 400) {
+          setEstimate(null);
+          setEstimateError("Completa tus datos del mes para calcular.");
+          return;
+        }
+
+        setEstimate(null);
+        setEstimateError("No se pudo cargar la provisión estimada.");
+      } catch {
+        setEstimate(null);
+        setEstimateError("No se pudo cargar la provisión estimada.");
+      } finally {
+        setIsLoadingEstimate(false);
+      }
+    }
+
+    async function loadTaxData() {
+      setIsLoadingTaxData(true);
+      setTaxError(null);
+
+      try {
+        const [profileResponse, monthlyInputResponse] = await Promise.all([
+          fetch("/api/profile/tax-co", { method: "GET" }),
+          fetch(`/api/taxes/monthly-input?year=${currentYear}&month=${currentMonth}`, {
+            method: "GET",
+          }),
+        ]);
+
+        if (!profileResponse.ok) {
+          const profileError = await profileResponse.json().catch(() => ({}));
+          throw new Error(profileError.error || "No se pudo cargar el perfil fiscal.");
+        }
+
+        if (!monthlyInputResponse.ok) {
+          const monthlyError = await monthlyInputResponse.json().catch(() => ({}));
+          throw new Error(monthlyError.error || "No se pudo cargar el resumen mensual.");
+        }
+
+        const profileData = (await profileResponse.json()) as TaxProfileResponse;
+        const monthlyData = (await monthlyInputResponse.json()) as MonthlyInputResponse;
+
+        if (profileData.profile) {
+          setRegimen(profileData.profile.regimen ?? "unknown");
+          setVatResponsible(profileData.profile.vat_responsible ?? "unknown");
+          setMunicipality(profileData.profile.municipality ?? "");
+        }
+
+        if (monthlyData.input) {
+          setIncomeCop(String(monthlyData.input.income_cop ?? 0));
+          setDeductibleExpensesCop(String(monthlyData.input.deductible_expenses_cop ?? 0));
+          setWithholdingsCop(String(monthlyData.input.withholdings_cop ?? 0));
+          setVatCollectedCop(String(monthlyData.input.vat_collected_cop ?? 0));
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "No se pudieron cargar los datos fiscales.";
+        setTaxError(message);
+      } finally {
+        setIsLoadingTaxData(false);
+      }
+    }
+
+    void loadEstimate();
+    void loadTaxData();
+  }, [currentMonth, currentYear]);
+
+  function formatCop(value: number): string {
+    return new Intl.NumberFormat("es-CO", {
+      style: "currency",
+      currency: "COP",
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
+
+  function getRiskBadgeClasses(riskLevel: "high" | "medium" | "low"): string {
+    if (riskLevel === "high") {
+      return "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
+    }
+
+    if (riskLevel === "medium") {
+      return "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200";
+    }
+
+    return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+  }
 
   async function handleSignOut() {
     setIsSigningOut(true);
@@ -105,94 +252,353 @@ export function ChatClient({
     await sendMessage(input);
   }
 
+  async function handleSaveTaxData() {
+    setTaxError(null);
+    setTaxSuccess(null);
+    setIsSavingTaxData(true);
+
+    try {
+      const incomeValue = Number(incomeCop || 0);
+      const deductibleExpensesValue = Number(deductibleExpensesCop || 0);
+      const withholdingsValue = Number(withholdingsCop || 0);
+      const vatCollectedValue = Number(vatCollectedCop || 0);
+
+      if (
+        !Number.isFinite(incomeValue) ||
+        !Number.isFinite(deductibleExpensesValue) ||
+        !Number.isFinite(withholdingsValue) ||
+        !Number.isFinite(vatCollectedValue)
+      ) {
+        throw new Error("Los valores del mes deben ser numericos.");
+      }
+
+      if (
+        incomeValue < 0 ||
+        deductibleExpensesValue < 0 ||
+        withholdingsValue < 0 ||
+        vatCollectedValue < 0
+      ) {
+        throw new Error("Los valores del mes no pueden ser negativos.");
+      }
+
+      const [profileResponse, monthlyResponse] = await Promise.all([
+        fetch("/api/profile/tax-co", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            regimen,
+            vat_responsible: vatResponsible,
+            municipality: municipality.trim() || null,
+          }),
+        }),
+        fetch("/api/taxes/monthly-input", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: currentYear,
+            month: currentMonth,
+            income_cop: incomeValue,
+            deductible_expenses_cop: deductibleExpensesValue,
+            withholdings_cop: withholdingsValue,
+            vat_collected_cop: vatCollectedValue,
+          }),
+        }),
+      ]);
+
+      if (!profileResponse.ok) {
+        const profileError = await profileResponse.json().catch(() => ({}));
+        throw new Error(profileError.error || "No se pudo guardar el perfil fiscal.");
+      }
+
+      if (!monthlyResponse.ok) {
+        const monthlyError = await monthlyResponse.json().catch(() => ({}));
+        throw new Error(monthlyError.error || "No se pudo guardar el resumen mensual.");
+      }
+
+      setTaxSuccess("Datos fiscales guardados.");
+
+      try {
+        const estimateResponse = await fetch("/api/taxes/estimate", { method: "GET" });
+        const estimateData = await estimateResponse.json().catch(() => ({}));
+
+        if (estimateResponse.ok) {
+          const parsedEstimateData = estimateData as TaxEstimateResponse;
+          setEstimate(parsedEstimateData.breakdown);
+          setEstimateError(null);
+        } else if (estimateResponse.status === 400) {
+          setEstimate(null);
+          setEstimateError("Completa tus datos del mes para calcular.");
+        } else {
+          setEstimate(null);
+          setEstimateError("No se pudo cargar la provisión estimada.");
+        }
+      } catch {
+        setEstimate(null);
+        setEstimateError("No se pudo cargar la provisión estimada.");
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "No se pudieron guardar los datos fiscales.";
+      setTaxError(message);
+    } finally {
+      setIsSavingTaxData(false);
+    }
+  }
+
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col p-4 sm:p-6">
-      {demoMode ? (
-        <div className="rounded-md border border-amber-400 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
-          DEMO MODE
-        </div>
-      ) : null}
-
-      {showDemoDebug ? (
-        <div className="mt-2 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-100">
-          DEMO DEBUG → process.env.DEMO_MODE: {demoModeRawEnv} | demoMode():{" "}
-          {String(demoMode)}
-        </div>
-      ) : null}
-
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Chat</h1>
-        {!demoMode ? (
-          <button
-            type="button"
-            onClick={handleSignOut}
-            className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-900"
-            disabled={isSigningOut}
-          >
-            {isSigningOut ? "Cerrando..." : "Cerrar sesion"}
-          </button>
+    <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-4 p-4 sm:p-6 lg:flex-row">
+      <div className="flex min-w-0 flex-1 flex-col">
+        {demoMode ? (
+          <div className="rounded-md border border-amber-400 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
+            DEMO MODE
+          </div>
         ) : null}
-      </div>
 
-      <div className="mt-4 flex-1 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-        {messages.length === 0 ? (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            Aun no hay mensajes.
-          </p>
-        ) : (
-          <ul className="space-y-3">
-            {messages.map((messageItem, index) => (
-              <li
-                key={`${messageItem.role}-${index}`}
-                className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
-                  messageItem.role === "user"
-                    ? "ml-auto bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                    : "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
-                }`}
-              >
-                {messageItem.content}
-              </li>
-            ))}
-            {isSending ? (
-              <li className="max-w-[85%] rounded-lg bg-zinc-100 px-3 py-2 text-sm text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
-                escribiendo...
-              </li>
-            ) : null}
-          </ul>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+        {showDemoDebug ? (
+          <div className="mt-2 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-100">
+            DEMO DEBUG → process.env.DEMO_MODE: {demoModeRawEnv} | demoMode():{" "}
+            {String(demoMode)}
+          </div>
+        ) : null}
 
-      <div className="mt-4 flex flex-wrap gap-2">
-        {exampleQuestions.map((question) => (
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-semibold">Chat</h1>
+          {!demoMode ? (
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              disabled={isSigningOut}
+            >
+              {isSigningOut ? "Cerrando..." : "Cerrar sesion"}
+            </button>
+          ) : null}
+        </div>
+
+        <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+          <h2 className="text-base font-semibold">Provisión estimada del mes</h2>
+
+          {isLoadingEstimate ? (
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Cargando estimación...</p>
+          ) : null}
+
+          {!isLoadingEstimate && estimate ? (
+            <div className="mt-3 space-y-2 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-600 dark:text-zinc-300">Total provisión</span>
+                <span className="font-semibold">{formatCop(estimate.totalProvision)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-600 dark:text-zinc-300">Renta</span>
+                <span>{formatCop(estimate.rentaProvision)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-600 dark:text-zinc-300">IVA</span>
+                <span>{formatCop(estimate.ivaProvision)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <span className="text-zinc-600 dark:text-zinc-300">Riesgo</span>
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-xs font-medium ${getRiskBadgeClasses(
+                    estimate.riskLevel,
+                  )}`}
+                >
+                  {estimate.riskLevel}
+                </span>
+              </div>
+              <p className="pt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                Estimación simplificada (MVP).
+              </p>
+            </div>
+          ) : null}
+
+          {!isLoadingEstimate && !estimate ? (
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+              {estimateError || "Completa tus datos del mes para calcular."}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="mt-4 flex-1 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+          {messages.length === 0 ? (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              Aun no hay mensajes.
+            </p>
+          ) : (
+            <ul className="space-y-3">
+              {messages.map((messageItem, index) => (
+                <li
+                  key={`${messageItem.role}-${index}`}
+                  className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                    messageItem.role === "user"
+                      ? "ml-auto bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      : "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
+                  }`}
+                >
+                  {messageItem.content}
+                </li>
+              ))}
+              {isSending ? (
+                <li className="max-w-[85%] rounded-lg bg-zinc-100 px-3 py-2 text-sm text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
+                  escribiendo...
+                </li>
+              ) : null}
+            </ul>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {exampleQuestions.map((question) => (
+            <button
+              key={question}
+              type="button"
+              onClick={() => void sendMessage(question)}
+              className="rounded-full border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              disabled={isSending}
+            >
+              {question}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
+          <input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder="Escribe tu mensaje..."
+            className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isSending}
+          />
           <button
-            key={question}
-            type="button"
-            onClick={() => void sendMessage(question)}
-            className="rounded-full border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            type="submit"
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
             disabled={isSending}
           >
-            {question}
+            {isSending ? "Enviando..." : "Enviar"}
           </button>
-        ))}
+        </form>
       </div>
 
-      <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
-        <input
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder="Escribe tu mensaje..."
-          className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
-          disabled={isSending}
-        />
+      <aside className="w-full rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 lg:mt-[4.25rem] lg:w-96">
+        <h2 className="text-lg font-semibold">Datos fiscales</h2>
+
+        {isLoadingTaxData ? (
+          <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Cargando...</p>
+        ) : null}
+
+        {taxError ? (
+          <p className="mt-2 rounded-md border border-red-300 bg-red-50 px-2 py-1 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
+            {taxError}
+          </p>
+        ) : null}
+
+        {taxSuccess ? (
+          <p className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-sm text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+            {taxSuccess}
+          </p>
+        ) : null}
+
+        <div className="mt-4 space-y-3">
+          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Perfil fiscal</h3>
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Regimen</label>
+          <select
+            value={regimen}
+            onChange={(event) =>
+              setRegimen(event.target.value as "simple" | "ordinario" | "unknown")
+            }
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          >
+            <option value="unknown">Sin definir</option>
+            <option value="simple">Simple</option>
+            <option value="ordinario">Ordinario</option>
+          </select>
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Responsable IVA</label>
+          <select
+            value={vatResponsible}
+            onChange={(event) =>
+              setVatResponsible(event.target.value as "yes" | "no" | "unknown")
+            }
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          >
+            <option value="unknown">Sin definir</option>
+            <option value="yes">Si</option>
+            <option value="no">No</option>
+          </select>
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Municipio</label>
+          <input
+            value={municipality}
+            onChange={(event) => setMunicipality(event.target.value)}
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            placeholder="Ej: Medellin"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          />
+        </div>
+
+        <div className="mt-5 space-y-3">
+          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+            Este mes ({currentMonth}/{currentYear})
+          </h3>
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Ingresos (COP)</label>
+          <input
+            type="number"
+            min={0}
+            value={incomeCop}
+            onChange={(event) => setIncomeCop(event.target.value)}
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          />
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Gastos deducibles (COP)</label>
+          <input
+            type="number"
+            min={0}
+            value={deductibleExpensesCop}
+            onChange={(event) => setDeductibleExpensesCop(event.target.value)}
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          />
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Retenciones (COP)</label>
+          <input
+            type="number"
+            min={0}
+            value={withholdingsCop}
+            onChange={(event) => setWithholdingsCop(event.target.value)}
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          />
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">IVA cobrado (COP)</label>
+          <input
+            type="number"
+            min={0}
+            value={vatCollectedCop}
+            onChange={(event) => setVatCollectedCop(event.target.value)}
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          />
+        </div>
+
         <button
-          type="submit"
-          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-          disabled={isSending}
+          type="button"
+          onClick={() => void handleSaveTaxData()}
+          className="mt-5 w-full rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          disabled={isLoadingTaxData || isSavingTaxData}
         >
-          {isSending ? "Enviando..." : "Enviar"}
+          {isSavingTaxData ? "Guardando..." : "Guardar"}
         </button>
-      </form>
+      </aside>
     </div>
   );
 }
