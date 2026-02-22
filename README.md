@@ -82,6 +82,10 @@ Abre `http://localhost:3000/chat`.
   - `conservative`: separa más caja para provisión
   - `balanced`: punto medio (default)
   - `aggressive`: separa menos caja para provisión
+- El perfil fiscal Colombia también soporta campos extendidos en `/api/profile/tax-co`:
+  - `taxpayer_type`, `legal_type`, `vat_periodicity`
+  - `monthly_fixed_costs_cop`, `monthly_payroll_cop`, `monthly_debt_payments_cop`
+  - Los campos numéricos se validan como valores no negativos.
 - Usa `/api/taxes/estimate` para obtener `totalProvision`, `rentaProvision`, `ivaProvision`, `cashAfterProvision` y nivel de riesgo.
 
 ### Verificar DEMO_MODE en desarrollo
