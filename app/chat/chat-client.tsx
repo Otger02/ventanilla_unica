@@ -21,6 +21,12 @@ type TaxProfileResponse = {
     regimen: "simple" | "ordinario" | "unknown";
     vat_responsible: "yes" | "no" | "unknown";
     provision_style: "conservative" | "balanced" | "aggressive";
+    taxpayer_type: "natural" | "juridica" | "unknown";
+    legal_type: "sas" | "ltda" | "other" | "unknown";
+    vat_periodicity: "bimestral" | "cuatrimestral" | "anual" | "unknown";
+    monthly_fixed_costs_cop: number;
+    monthly_payroll_cop: number;
+    monthly_debt_payments_cop: number;
     municipality: string | null;
   } | null;
 };
@@ -100,6 +106,18 @@ export function ChatClient({
   const [provisionStyle, setProvisionStyle] = useState<
     "conservative" | "balanced" | "aggressive"
   >("balanced");
+  const [taxpayerType, setTaxpayerType] = useState<"natural" | "juridica" | "unknown">(
+    "unknown",
+  );
+  const [legalType, setLegalType] = useState<"sas" | "ltda" | "other" | "unknown">(
+    "unknown",
+  );
+  const [vatPeriodicity, setVatPeriodicity] = useState<
+    "bimestral" | "cuatrimestral" | "anual" | "unknown"
+  >("unknown");
+  const [monthlyFixedCostsCop, setMonthlyFixedCostsCop] = useState("0");
+  const [monthlyPayrollCop, setMonthlyPayrollCop] = useState("0");
+  const [monthlyDebtPaymentsCop, setMonthlyDebtPaymentsCop] = useState("0");
   const [municipality, setMunicipality] = useState("");
   const [incomeCop, setIncomeCop] = useState("0");
   const [deductibleExpensesCop, setDeductibleExpensesCop] = useState("0");
@@ -196,6 +214,12 @@ export function ChatClient({
           setRegimen(profileData.profile.regimen ?? "unknown");
           setVatResponsible(profileData.profile.vat_responsible ?? "unknown");
           setProvisionStyle(profileData.profile.provision_style ?? "balanced");
+          setTaxpayerType(profileData.profile.taxpayer_type ?? "unknown");
+          setLegalType(profileData.profile.legal_type ?? "unknown");
+          setVatPeriodicity(profileData.profile.vat_periodicity ?? "unknown");
+          setMonthlyFixedCostsCop(String(profileData.profile.monthly_fixed_costs_cop ?? 0));
+          setMonthlyPayrollCop(String(profileData.profile.monthly_payroll_cop ?? 0));
+          setMonthlyDebtPaymentsCop(String(profileData.profile.monthly_debt_payments_cop ?? 0));
           setMunicipality(profileData.profile.municipality ?? "");
         }
 
@@ -329,23 +353,32 @@ export function ChatClient({
       const deductibleExpensesValue = Number(deductibleExpensesCop || 0);
       const withholdingsValue = Number(withholdingsCop || 0);
       const vatCollectedValue = Number(vatCollectedCop || 0);
+      const monthlyFixedCostsValue = Number(monthlyFixedCostsCop || 0);
+      const monthlyPayrollValue = Number(monthlyPayrollCop || 0);
+      const monthlyDebtPaymentsValue = Number(monthlyDebtPaymentsCop || 0);
 
       if (
         !Number.isFinite(incomeValue) ||
         !Number.isFinite(deductibleExpensesValue) ||
         !Number.isFinite(withholdingsValue) ||
-        !Number.isFinite(vatCollectedValue)
+        !Number.isFinite(vatCollectedValue) ||
+        !Number.isFinite(monthlyFixedCostsValue) ||
+        !Number.isFinite(monthlyPayrollValue) ||
+        !Number.isFinite(monthlyDebtPaymentsValue)
       ) {
-        throw new Error("Los valores del mes deben ser numericos.");
+        throw new Error("Los valores del formulario deben ser numericos.");
       }
 
       if (
         incomeValue < 0 ||
         deductibleExpensesValue < 0 ||
         withholdingsValue < 0 ||
-        vatCollectedValue < 0
+        vatCollectedValue < 0 ||
+        monthlyFixedCostsValue < 0 ||
+        monthlyPayrollValue < 0 ||
+        monthlyDebtPaymentsValue < 0
       ) {
-        throw new Error("Los valores del mes no pueden ser negativos.");
+        throw new Error("Los valores no pueden ser negativos.");
       }
 
       const [profileResponse, monthlyResponse] = await Promise.all([
@@ -358,6 +391,12 @@ export function ChatClient({
             regimen,
             vat_responsible: vatResponsible,
             provision_style: provisionStyle,
+            taxpayer_type: taxpayerType,
+            legal_type: taxpayerType === "juridica" ? legalType : "unknown",
+            vat_periodicity: vatPeriodicity,
+            monthly_fixed_costs_cop: monthlyFixedCostsValue,
+            monthly_payroll_cop: monthlyPayrollValue,
+            monthly_debt_payments_cop: monthlyDebtPaymentsValue,
             municipality: municipality.trim() || null,
           }),
         }),
@@ -522,6 +561,7 @@ export function ChatClient({
             <select
               value={historyMonths}
               onChange={(event) => setHistoryMonths(Number(event.target.value) as 6 | 12)}
+              title="Seleccionar cantidad de meses del histórico"
               className="rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             >
               <option value={6}>6 meses</option>
@@ -565,21 +605,21 @@ export function ChatClient({
                         {getMonthLabel(item.year, item.month)}
                       </p>
                       <div className="space-y-1">
-                        <div className="h-1.5 w-full rounded bg-zinc-100 dark:bg-zinc-800">
-                          <div className="h-1.5 rounded bg-sky-500" style={{ width: `${incomeWidth}%` }} />
-                        </div>
-                        <div className="h-1.5 w-full rounded bg-zinc-100 dark:bg-zinc-800">
-                          <div
-                            className="h-1.5 rounded bg-amber-500"
-                            style={{ width: `${provisionWidth}%` }}
-                          />
-                        </div>
-                        <div className="h-1.5 w-full rounded bg-zinc-100 dark:bg-zinc-800">
-                          <div
-                            className="h-1.5 rounded bg-emerald-500"
-                            style={{ width: `${cashWidth}%` }}
-                          />
-                        </div>
+                        <progress
+                          className="h-1.5 w-full overflow-hidden rounded [&::-webkit-progress-bar]:bg-zinc-100 [&::-webkit-progress-value]:bg-sky-500 dark:[&::-webkit-progress-bar]:bg-zinc-800"
+                          value={incomeWidth}
+                          max={100}
+                        />
+                        <progress
+                          className="h-1.5 w-full overflow-hidden rounded [&::-webkit-progress-bar]:bg-zinc-100 [&::-webkit-progress-value]:bg-amber-500 dark:[&::-webkit-progress-bar]:bg-zinc-800"
+                          value={provisionWidth}
+                          max={100}
+                        />
+                        <progress
+                          className="h-1.5 w-full overflow-hidden rounded [&::-webkit-progress-bar]:bg-zinc-100 [&::-webkit-progress-value]:bg-emerald-500 dark:[&::-webkit-progress-bar]:bg-zinc-800"
+                          value={cashWidth}
+                          max={100}
+                        />
                       </div>
                     </div>
                   );
@@ -716,6 +756,7 @@ export function ChatClient({
             onChange={(event) =>
               setRegimen(event.target.value as "simple" | "ordinario" | "unknown")
             }
+            title="Seleccionar régimen fiscal"
             className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isLoadingTaxData || isSavingTaxData}
           >
@@ -730,6 +771,7 @@ export function ChatClient({
             onChange={(event) =>
               setVatResponsible(event.target.value as "yes" | "no" | "unknown")
             }
+            title="Seleccionar responsabilidad de IVA"
             className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isLoadingTaxData || isSavingTaxData}
           >
@@ -748,6 +790,7 @@ export function ChatClient({
                 event.target.value as "conservative" | "balanced" | "aggressive",
               )
             }
+            title="Seleccionar estilo de provisión"
             className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isLoadingTaxData || isSavingTaxData}
           >
@@ -760,8 +803,111 @@ export function ChatClient({
           <input
             value={municipality}
             onChange={(event) => setMunicipality(event.target.value)}
+            title="Municipio principal de operación"
             className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             placeholder="Ej: Medellin"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          />
+        </div>
+
+        <div className="mt-5 space-y-3">
+          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+            Compromisos mensuales
+          </h3>
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">
+            Tipo de contribuyente
+          </label>
+          <select
+            value={taxpayerType}
+            onChange={(event) => {
+              const nextValue = event.target.value as "natural" | "juridica" | "unknown";
+              setTaxpayerType(nextValue);
+              if (nextValue !== "juridica") {
+                setLegalType("unknown");
+              }
+            }}
+            title="Seleccionar tipo de contribuyente"
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          >
+            <option value="natural">Natural</option>
+            <option value="juridica">Jurídica</option>
+            <option value="unknown">Unknown</option>
+          </select>
+
+          {taxpayerType === "juridica" ? (
+            <>
+              <label className="block text-xs text-zinc-600 dark:text-zinc-300">Tipo legal</label>
+              <select
+                value={legalType}
+                onChange={(event) =>
+                  setLegalType(event.target.value as "sas" | "ltda" | "other" | "unknown")
+                }
+                title="Seleccionar tipo legal"
+                className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                disabled={isLoadingTaxData || isSavingTaxData}
+              >
+                <option value="sas">SAS</option>
+                <option value="ltda">LTDA</option>
+                <option value="other">Otra</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </>
+          ) : null}
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Periodicidad IVA</label>
+          <select
+            value={vatPeriodicity}
+            onChange={(event) =>
+              setVatPeriodicity(
+                event.target.value as "bimestral" | "cuatrimestral" | "anual" | "unknown",
+              )
+            }
+            title="Seleccionar periodicidad de IVA"
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          >
+            <option value="bimestral">Bimestral</option>
+            <option value="cuatrimestral">Cuatrimestral</option>
+            <option value="anual">Anual</option>
+            <option value="unknown">Unknown</option>
+          </select>
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">
+            Gastos fijos mensuales (COP)
+          </label>
+          <input
+            type="number"
+            min={0}
+            value={monthlyFixedCostsCop}
+            onChange={(event) => setMonthlyFixedCostsCop(event.target.value)}
+            title="Gastos fijos mensuales en pesos colombianos"
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          />
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Nómina mensual (COP)</label>
+          <input
+            type="number"
+            min={0}
+            value={monthlyPayrollCop}
+            onChange={(event) => setMonthlyPayrollCop(event.target.value)}
+            title="Nómina mensual en pesos colombianos"
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            disabled={isLoadingTaxData || isSavingTaxData}
+          />
+
+          <label className="block text-xs text-zinc-600 dark:text-zinc-300">
+            Cuotas/deuda mensual (COP)
+          </label>
+          <input
+            type="number"
+            min={0}
+            value={monthlyDebtPaymentsCop}
+            onChange={(event) => setMonthlyDebtPaymentsCop(event.target.value)}
+            title="Cuotas o deuda mensual en pesos colombianos"
+            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isLoadingTaxData || isSavingTaxData}
           />
         </div>
@@ -777,6 +923,7 @@ export function ChatClient({
             min={0}
             value={incomeCop}
             onChange={(event) => setIncomeCop(event.target.value)}
+            title="Ingresos del mes en pesos colombianos"
             className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isLoadingTaxData || isSavingTaxData}
           />
@@ -787,6 +934,7 @@ export function ChatClient({
             min={0}
             value={deductibleExpensesCop}
             onChange={(event) => setDeductibleExpensesCop(event.target.value)}
+            title="Gastos deducibles del mes en pesos colombianos"
             className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isLoadingTaxData || isSavingTaxData}
           />
@@ -797,6 +945,7 @@ export function ChatClient({
             min={0}
             value={withholdingsCop}
             onChange={(event) => setWithholdingsCop(event.target.value)}
+            title="Retenciones del mes en pesos colombianos"
             className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isLoadingTaxData || isSavingTaxData}
           />
@@ -807,6 +956,7 @@ export function ChatClient({
             min={0}
             value={vatCollectedCop}
             onChange={(event) => setVatCollectedCop(event.target.value)}
+            title="IVA cobrado del mes en pesos colombianos"
             className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isLoadingTaxData || isSavingTaxData}
           />
