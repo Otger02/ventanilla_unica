@@ -22,8 +22,22 @@ type StoredMessage = {
 
 type UserTaxProfileRow = {
   persona_type: "natural" | "juridica" | "unknown";
+  taxpayer_type: "natural" | "juridica" | "individual" | "company" | "unknown";
   regimen: "simple" | "ordinario" | "unknown";
   vat_responsible: "yes" | "no" | "unknown";
+  vat_periodicity:
+    | "monthly"
+    | "bimonthly"
+    | "quarterly"
+    | "annual"
+    | "bimestral"
+    | "cuatrimestral"
+    | "anual"
+    | "not_applicable"
+    | "unknown";
+  monthly_fixed_costs_cop: number;
+  monthly_payroll_cop: number;
+  monthly_debt_payments_cop: number;
   provision_style: "conservative" | "balanced" | "aggressive";
   municipality: string | null;
 };
@@ -46,11 +60,44 @@ type CurrentTaxCalculation =
       };
       profile: {
         persona_type: "natural" | "juridica" | "unknown";
+        taxpayer_type: "natural" | "juridica" | "individual" | "company" | "unknown";
         regimen: "simple" | "ordinario" | "unknown";
         vat_responsible: "yes" | "no" | "unknown";
+        vat_periodicity:
+          | "monthly"
+          | "bimonthly"
+          | "quarterly"
+          | "annual"
+          | "bimestral"
+          | "cuatrimestral"
+          | "anual"
+          | "not_applicable"
+          | "unknown";
+        monthly_fixed_costs_cop: number;
+        monthly_payroll_cop: number;
+        monthly_debt_payments_cop: number;
         provision_style: "conservative" | "balanced" | "aggressive";
         municipality: string | null;
       };
+      profile_snapshot: {
+        taxpayer_type: "natural" | "juridica" | "individual" | "company" | "unknown";
+        regimen: "simple" | "ordinario" | "unknown";
+        vat_responsible: "yes" | "no" | "unknown";
+        vat_periodicity:
+          | "monthly"
+          | "bimonthly"
+          | "quarterly"
+          | "annual"
+          | "bimestral"
+          | "cuatrimestral"
+          | "anual"
+          | "not_applicable"
+          | "unknown";
+        monthly_fixed_costs_cop: number;
+        monthly_payroll_cop: number;
+        monthly_debt_payments_cop: number;
+      };
+      missing_fields: string[];
       inputs: {
         income_cop: number;
         deductible_expenses_cop: number;
@@ -73,6 +120,25 @@ type CurrentTaxCalculation =
         year: number;
         month: number;
       };
+      profile_snapshot?: {
+        taxpayer_type: "natural" | "juridica" | "individual" | "company" | "unknown";
+        regimen: "simple" | "ordinario" | "unknown";
+        vat_responsible: "yes" | "no" | "unknown";
+        vat_periodicity:
+          | "monthly"
+          | "bimonthly"
+          | "quarterly"
+          | "annual"
+          | "bimestral"
+          | "cuatrimestral"
+          | "anual"
+          | "not_applicable"
+          | "unknown";
+        monthly_fixed_costs_cop: number;
+        monthly_payroll_cop: number;
+        monthly_debt_payments_cop: number;
+      };
+      missing_fields?: string[];
     };
 
 class ApiError extends Error {
@@ -116,7 +182,36 @@ function isModelNotFoundError(error: OpenAiErrorLike): boolean {
   return status === 404 && (message.includes("model") || code === "model_not_found");
 }
 
-const TAX_INTENT_KEYWORDS = ["impuestos", "pagar", "provision", "este mes", "iva", "renta"];
+const TAX_INTENT_KEYWORDS = [
+  "impuestos",
+  "pagar",
+  "provision",
+  "este mes",
+  "iva",
+  "renta",
+  "contratar",
+  "nomina",
+  "empleado",
+  "empleados",
+  "cuotas",
+  "deuda",
+  "contribuyente",
+  "gastos fijos",
+  "pago en cuotas",
+  "no pagar de golpe",
+];
+
+const REQUIRED_PROFILE_FIELDS = [
+  "taxpayer_type",
+  "regimen",
+  "vat_responsible",
+  "vat_periodicity",
+  "monthly_fixed_costs_cop",
+  "monthly_payroll_cop",
+  "monthly_debt_payments_cop",
+] as const;
+
+type RequiredProfileField = (typeof REQUIRED_PROFILE_FIELDS)[number];
 
 const KB_RESUMEN = {
   impuestos_basicos: [
@@ -142,6 +237,52 @@ function hasTaxIntent(message: string): boolean {
   return TAX_INTENT_KEYWORDS.some((keyword) => normalizedMessage.includes(keyword));
 }
 
+function buildProfileSnapshot(profileData: UserTaxProfileRow | null) {
+  return {
+    taxpayer_type: profileData?.taxpayer_type ?? "unknown",
+    regimen: profileData?.regimen ?? "unknown",
+    vat_responsible: profileData?.vat_responsible ?? "unknown",
+    vat_periodicity: profileData?.vat_periodicity ?? "unknown",
+    monthly_fixed_costs_cop: profileData?.monthly_fixed_costs_cop ?? 0,
+    monthly_payroll_cop: profileData?.monthly_payroll_cop ?? 0,
+    monthly_debt_payments_cop: profileData?.monthly_debt_payments_cop ?? 0,
+  };
+}
+
+function getMissingProfileFields(profileSnapshot: ReturnType<typeof buildProfileSnapshot>) {
+  const missingFields: RequiredProfileField[] = [];
+
+  if (profileSnapshot.taxpayer_type === "unknown") {
+    missingFields.push("taxpayer_type");
+  }
+
+  if (profileSnapshot.regimen === "unknown") {
+    missingFields.push("regimen");
+  }
+
+  if (profileSnapshot.vat_responsible === "unknown") {
+    missingFields.push("vat_responsible");
+  }
+
+  if (profileSnapshot.vat_periodicity === "unknown") {
+    missingFields.push("vat_periodicity");
+  }
+
+  if (profileSnapshot.monthly_fixed_costs_cop <= 0) {
+    missingFields.push("monthly_fixed_costs_cop");
+  }
+
+  if (profileSnapshot.monthly_payroll_cop <= 0) {
+    missingFields.push("monthly_payroll_cop");
+  }
+
+  if (profileSnapshot.monthly_debt_payments_cop <= 0) {
+    missingFields.push("monthly_debt_payments_cop");
+  }
+
+  return missingFields;
+}
+
 function maskUserId(userId: string | null): string | null {
   if (!userId) {
     return null;
@@ -160,7 +301,9 @@ async function getCurrentTaxCalculation(
 
   const { data: profileData, error: profileError } = await supabase
     .from("user_tax_profile_co")
-    .select("persona_type, regimen, vat_responsible, provision_style, municipality")
+    .select(
+      "persona_type, taxpayer_type, regimen, vat_responsible, vat_periodicity, monthly_fixed_costs_cop, monthly_payroll_cop, monthly_debt_payments_cop, provision_style, municipality",
+    )
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -170,6 +313,8 @@ async function getCurrentTaxCalculation(
       error: "No se pudo obtener el perfil fiscal.",
       reason: "missing_profile",
       period: { year, month },
+      profile_snapshot: buildProfileSnapshot(null),
+      missing_fields: [...REQUIRED_PROFILE_FIELDS],
     };
   }
 
@@ -179,8 +324,14 @@ async function getCurrentTaxCalculation(
       error: "Falta perfil fiscal. Guarda tu perfil antes de estimar.",
       reason: "missing_profile",
       period: { year, month },
+      profile_snapshot: buildProfileSnapshot(null),
+      missing_fields: [...REQUIRED_PROFILE_FIELDS],
     };
   }
+
+  const profile = profileData as UserTaxProfileRow;
+  const profileSnapshot = buildProfileSnapshot(profile);
+  const missingFields = getMissingProfileFields(profileSnapshot);
 
   const { data: monthlyInputData, error: monthlyInputError } = await supabase
     .from("monthly_tax_inputs_co")
@@ -198,6 +349,8 @@ async function getCurrentTaxCalculation(
       error: "No se pudo obtener el input mensual.",
       reason: "missing_monthly_input",
       period: { year, month },
+      profile_snapshot: profileSnapshot,
+      missing_fields: missingFields,
     };
   }
 
@@ -207,12 +360,27 @@ async function getCurrentTaxCalculation(
       error: "Faltan datos del mes actual. Guarda ingresos/gastos del mes antes de estimar.",
       reason: "missing_monthly_input",
       period: { year, month },
+      profile_snapshot: profileSnapshot,
+      missing_fields: missingFields,
     };
   }
 
-  const profile = profileData as UserTaxProfileRow;
   const inputs = monthlyInputData as MonthlyTaxInputRow;
-  const result = calculateMonthlyProvisionCO(profile, inputs);
+  let result: ReturnType<typeof calculateMonthlyProvisionCO>;
+
+  try {
+    result = calculateMonthlyProvisionCO(profile, inputs);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Cálculo no disponible";
+    return {
+      ok: false,
+      error: message,
+      reason: "calculation_error",
+      period: { year, month },
+      profile_snapshot: profileSnapshot,
+      missing_fields: missingFields,
+    };
+  }
 
   if (!result.ok) {
     return {
@@ -220,6 +388,8 @@ async function getCurrentTaxCalculation(
       error: result.error,
       reason: "calculation_error",
       period: { year, month },
+      profile_snapshot: profileSnapshot,
+      missing_fields: missingFields,
     };
   }
 
@@ -228,11 +398,18 @@ async function getCurrentTaxCalculation(
     period: { year, month },
     profile: {
       persona_type: profile.persona_type,
+      taxpayer_type: profile.taxpayer_type,
       regimen: profile.regimen,
       vat_responsible: profile.vat_responsible,
+      vat_periodicity: profile.vat_periodicity,
+      monthly_fixed_costs_cop: profile.monthly_fixed_costs_cop,
+      monthly_payroll_cop: profile.monthly_payroll_cop,
+      monthly_debt_payments_cop: profile.monthly_debt_payments_cop,
       provision_style: profile.provision_style,
       municipality: profile.municipality,
     },
+    profile_snapshot: profileSnapshot,
+    missing_fields: missingFields,
     inputs: {
       income_cop: inputs.income_cop,
       deductible_expenses_cop: inputs.deductible_expenses_cop,
@@ -382,6 +559,8 @@ export async function POST(request: NextRequest) {
           ok: false,
           error: "No autenticado. Inicia sesión para calcular provisión del mes.",
           reason: "not_authenticated",
+          profile_snapshot: buildProfileSnapshot(null),
+          missing_fields: [...REQUIRED_PROFILE_FIELDS],
         };
       } else {
         calcActualPayload = await getCurrentTaxCalculation(supabase, authenticatedUserId);
@@ -422,11 +601,22 @@ export async function POST(request: NextRequest) {
         [
           "CALCULO_ACTUAL:",
           calcActualJson,
+          "PROFILE_SNAPSHOT:",
+          JSON.stringify(calcActualPayload?.profile_snapshot ?? buildProfileSnapshot(null), null, 2),
+          "missing_fields:",
+          JSON.stringify(calcActualPayload?.missing_fields ?? [...REQUIRED_PROFILE_FIELDS]),
           "KB_RESUMEN:",
           kbResumenJson,
           "INSTRUCCION_FISCAL:",
-          "Si CALCULO_ACTUAL.ok=true, explica el cálculo con lenguaje simple, sugiere próximos pasos concretos y menciona qué dato adicional ayudaría a afinar.",
-          "Si CALCULO_ACTUAL.ok=false, explica por qué no se pudo calcular, indica el siguiente paso para desbloquearlo y menciona qué dato faltaría para afinar.",
+          "Si CALCULO_ACTUAL.ok=true, primero responde con lo que ya sabes en lenguaje simple y luego sugiere próximos pasos concretos.",
+          "Si CALCULO_ACTUAL.ok=false, continúa en modo best-effort: responde con lo que sí se puede inferir y no inventes cifras.",
+          "Si falta información clave del perfil (taxpayer_type, regimen, vat_responsible, vat_periodicity, monthly_fixed_costs_cop, monthly_payroll_cop, monthly_debt_payments_cop), NO inventes.",
+          "Usa missing_fields para decidir qué pedir y solicita exactamente 1-2 datos máximos con opciones cerradas cuando sea posible.",
+          "Flujo de respuesta: (1) lo que se sabe, (2) exactamente la pregunta mínima faltante.",
+          "Ejemplo contratar: pide costo mensual total de contratación (salario + prestaciones + parafiscales) y confirma el valor de gastos fijos mensuales.",
+          "Ejemplo pago en cuotas/no pagar de golpe: pide monto total, fecha límite, y si puede pagar algo hoy.",
+          "Si piden estrategias de pago, ofrece solo opciones legales: acuerdo de pago con la autoridad, programar transferencias, separar fondos en cuenta aparte, priorizar obligaciones por vencimiento e impacto.",
+          "No des pasos ilegales ni sugerencias de evasión.",
         ].join("\n"),
       );
     }
