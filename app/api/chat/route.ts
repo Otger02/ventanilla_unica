@@ -234,12 +234,18 @@ function isModelNotFoundError(error: OpenAiErrorLike): boolean {
 }
 
 const TAX_INTENT_KEYWORDS = [
-  "impuestos",
-  "pagar",
   "provision",
-  "este mes",
-  "iva",
+  "provisionar",
+  "separar",
+  "apartar",
+  "dian",
+  "declaracion",
+  "retencion",
   "renta",
+  "iva",
+  "impuestos",
+  "pagar impuestos",
+  "este mes",
   "contratar",
   "nomina",
   "empleado",
@@ -251,6 +257,8 @@ const TAX_INTENT_KEYWORDS = [
   "pago en cuotas",
   "no pagar de golpe",
 ];
+
+const HARD_TAX_TRIGGERS = ["impuestos", "iva", "dian"] as const;
 
 const REQUIRED_PROFILE_FIELDS = [
   "taxpayer_type",
@@ -283,9 +291,25 @@ function normalizeForIntent(text: string): string {
   return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
-function hasTaxIntent(message: string): boolean {
+function detectTaxIntent(message: string): { detected: boolean; matchedKeyword: string | null } {
   const normalizedMessage = normalizeForIntent(message);
-  return TAX_INTENT_KEYWORDS.some((keyword) => normalizedMessage.includes(keyword));
+
+  const hardTrigger = HARD_TAX_TRIGGERS.find((keyword) => normalizedMessage.includes(keyword));
+  if (hardTrigger) {
+    return {
+      detected: true,
+      matchedKeyword: hardTrigger,
+    };
+  }
+
+  const matchedKeyword = TAX_INTENT_KEYWORDS.find((keyword) =>
+    normalizedMessage.includes(normalizeForIntent(keyword)),
+  );
+
+  return {
+    detected: Boolean(matchedKeyword),
+    matchedKeyword: matchedKeyword ?? null,
+  };
 }
 
 function buildProfileSnapshot(profileData: UserTaxProfileRow | null) {
@@ -746,7 +770,9 @@ export async function POST(request: NextRequest) {
       authenticatedUserId,
     );
 
-    const taxIntentDetected = hasTaxIntent(message);
+    const taxIntent = detectTaxIntent(message);
+    const taxIntentDetected = taxIntent.detected;
+    const taxIntentKeyword = taxIntent.matchedKeyword;
     let calcActualPayload: CurrentTaxCalculation | null = null;
 
     if (taxIntentDetected) {
@@ -777,6 +803,7 @@ export async function POST(request: NextRequest) {
 
       console.info("[api/chat] Tax debug context", {
         taxIntentDetected,
+        taxIntentKeyword,
         calcStatus,
         errorCode,
         model: openAiModel,
@@ -890,6 +917,7 @@ export async function POST(request: NextRequest) {
 
         console.info("[api/chat] Tax debug summary", {
           taxIntentDetected,
+          taxIntentKeyword,
           calcStatus,
           errorCode,
           model: openAiModel,
@@ -929,6 +957,7 @@ export async function POST(request: NextRequest) {
 
         console.error("[api/chat] Tax debug summary", {
           taxIntentDetected,
+          taxIntentKeyword,
           calcStatus,
           errorCode,
           model: openAiModel,
