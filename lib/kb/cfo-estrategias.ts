@@ -37,6 +37,26 @@ export const KB_CFO_SNIPPETS: CfoKbSnippet[] = [
          "Mantén trazabilidad por obligación y periodo.",
    },
    {
+      id: "priorizacion-vencimientos",
+      keywords: [
+         "priorizar",
+         "priorizo",
+         "vencimiento",
+         "nómina",
+         "nomina",
+         "caja",
+         "liquidez",
+         "urgente",
+         "justo de caja",
+      ],
+      title: "Prioriza por vencimiento y riesgo",
+      content:
+         "Prioriza por fecha de vencimiento, sanción potencial e impacto operativo.\n" +
+         "El IVA siempre se separa; evita usarlo como caja de operación.\n" +
+         "Si estás justo, aporta semanalmente a una subcuenta de impuestos y paga completo en vencimiento.\n" +
+         "Si no alcanzas, evalúa acuerdo de pago con DIAN por la vía legal.",
+      },
+      {
       id: "priorizacion-obligaciones",
       keywords: ["priorizar", "vencimiento", "sancion", "operacion", "intereses"],
       title: "Priorización por riesgo",
