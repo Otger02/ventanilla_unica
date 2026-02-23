@@ -311,6 +311,15 @@ const KB_RESUMEN = {
   ],
 };
 
+const TERMINOLOGIA_CO_LINES = [
+  "Terminología (CO):",
+  "- IVA: no es ingreso; es dinero que cobras y debes entregar al Estado.",
+  "- Retenciones: son anticipos; pueden ser renta, IVA o ICA (no asumir cuál si no está clasificado).",
+  "- Régimen ordinario vs SIMPLE: ordinario liquida impuestos con reglas generales; SIMPLE unifica y simplifica cargas para ciertos contribuyentes.",
+  "- DIAN: autoridad tributaria nacional.",
+  "- Caja/flujo: hablar en términos de plata disponible y separar en cuenta aparte.",
+];
+
 function normalizeForIntent(text: string): string {
   return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
@@ -846,6 +855,7 @@ export async function POST(request: NextRequest) {
     const selectedKbSnippets = financialIntent.enabled
       ? selectKbSnippets(normalizedMessage, KB_CFO_SNIPPETS)
       : [];
+    const kbSnippetIdsUsed = selectedKbSnippets.map((snippet) => snippet.id);
     let calcActualPayload: CurrentTaxCalculation | null = null;
 
     if (taxIntentDetected) {
@@ -876,11 +886,8 @@ export async function POST(request: NextRequest) {
 
       console.info("[api/chat] Tax debug context", {
         taxIntentDetected,
-        taxIntentKeyword,
-        financialIntentEnabled: financialIntent.enabled,
-        financialIntentReason: financialIntent.reason,
-        financialIntentKeyword: financialIntent.matchedKeyword,
-        kbSnippetCount: selectedKbSnippets.length,
+        financialIntentDetected: financialIntent.enabled,
+        kbSnippetIdsUsed,
         calcStatus,
         errorCode,
         model: openAiModel,
@@ -897,6 +904,7 @@ export async function POST(request: NextRequest) {
         "Si FINANCIAL_CONTEXT contiene valores numéricos, debes usarlos. No inventes cifras ni uses ejemplos hipotéticos.",
         "Si monthly_inputs es null, pide al usuario llenar el mes o confirma si usamos el último mes disponible.",
       ].join("\n"),
+      TERMINOLOGIA_CO_LINES.join("\n"),
     ];
 
     if (
@@ -1042,11 +1050,8 @@ export async function POST(request: NextRequest) {
 
         console.info("[api/chat] Tax debug summary", {
           taxIntentDetected,
-          taxIntentKeyword,
-          financialIntentEnabled: financialIntent.enabled,
-          financialIntentReason: financialIntent.reason,
-          financialIntentKeyword: financialIntent.matchedKeyword,
-          kbSnippetCount: selectedKbSnippets.length,
+          financialIntentDetected: financialIntent.enabled,
+          kbSnippetIdsUsed,
           calcStatus,
           errorCode,
           model: openAiModel,
@@ -1086,11 +1091,8 @@ export async function POST(request: NextRequest) {
 
         console.error("[api/chat] Tax debug summary", {
           taxIntentDetected,
-          taxIntentKeyword,
-          financialIntentEnabled: financialIntent.enabled,
-          financialIntentReason: financialIntent.reason,
-          financialIntentKeyword: financialIntent.matchedKeyword,
-          kbSnippetCount: selectedKbSnippets.length,
+          financialIntentDetected: financialIntent.enabled,
+          kbSnippetIdsUsed,
           calcStatus,
           errorCode,
           model: openAiModel,
