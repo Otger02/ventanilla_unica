@@ -6,6 +6,7 @@ import { isDemoModeEnabled } from "@/lib/demo-mode";
 import { logChatRequest } from "@/lib/logger";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { ventanillaUnicaSystemPrompt } from "@/lib/ai/systemPrompt";
+import { KB_CFO_SNIPPETS } from "@/lib/kb/cfo-estrategias";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { calculateMonthlyProvisionCO } from "@/lib/tax/calculators/colombia/monthlyProvision";
 
@@ -260,6 +261,29 @@ const TAX_INTENT_KEYWORDS = [
 
 const HARD_TAX_TRIGGERS = ["impuestos", "iva", "dian"] as const;
 
+const FINANCIAL_INTENT_KEYWORDS = [
+  "impuestos",
+  "iva",
+  "dian",
+  "renta",
+  "retencion",
+  "flujo",
+  "caja",
+  "provision",
+  "apartar",
+  "separar",
+  "cuotas",
+  "deuda",
+  "vencimiento",
+  "sancion",
+  "domiciliar",
+  "programar",
+  "tesoreria",
+  "subcuentas",
+  "contratar",
+  "nomina",
+];
+
 const REQUIRED_PROFILE_FIELDS = [
   "taxpayer_type",
   "regimen",
@@ -310,6 +334,49 @@ function detectTaxIntent(message: string): { detected: boolean; matchedKeyword: 
     detected: Boolean(matchedKeyword),
     matchedKeyword: matchedKeyword ?? null,
   };
+}
+
+function detectFinancialIntent(
+  normalizedMessage: string,
+): { enabled: boolean; reason: string; matchedKeyword: string | null } {
+  const matchedKeyword = FINANCIAL_INTENT_KEYWORDS.find((keyword) =>
+    normalizedMessage.includes(keyword),
+  );
+
+  if (!matchedKeyword) {
+    return {
+      enabled: false,
+      reason: "no_financial_keyword",
+      matchedKeyword: null,
+    };
+  }
+
+  return {
+    enabled: true,
+    reason: "keyword_match",
+    matchedKeyword,
+  };
+}
+
+function selectKbSnippets(normalizedMessage: string, snippets: typeof KB_CFO_SNIPPETS) {
+  const scoredSnippets = snippets
+    .map((snippet) => {
+      const normalizedKeywords = snippet.keywords.map((keyword) => normalizeForIntent(keyword));
+      const score = normalizedKeywords.reduce((accumulator, keyword) => {
+        return accumulator + (normalizedMessage.includes(keyword) ? 1 : 0);
+      }, 0);
+
+      return {
+        snippet,
+        score,
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 2)
+    .map((item) => item.snippet);
+
+  return scoredSnippets;
 }
 
 function buildProfileSnapshot(profileData: UserTaxProfileRow | null) {
@@ -765,6 +832,8 @@ export async function POST(request: NextRequest) {
     );
     contextLines.push(`Usuario: ${message}`);
 
+    const normalizedMessage = normalizeForIntent(message);
+
     const financialContextPayload = await getFinancialContextPayload(
       supabase,
       authenticatedUserId,
@@ -773,6 +842,10 @@ export async function POST(request: NextRequest) {
     const taxIntent = detectTaxIntent(message);
     const taxIntentDetected = taxIntent.detected;
     const taxIntentKeyword = taxIntent.matchedKeyword;
+    const financialIntent = detectFinancialIntent(normalizedMessage);
+    const selectedKbSnippets = financialIntent.enabled
+      ? selectKbSnippets(normalizedMessage, KB_CFO_SNIPPETS)
+      : [];
     let calcActualPayload: CurrentTaxCalculation | null = null;
 
     if (taxIntentDetected) {
@@ -804,6 +877,10 @@ export async function POST(request: NextRequest) {
       console.info("[api/chat] Tax debug context", {
         taxIntentDetected,
         taxIntentKeyword,
+        financialIntentEnabled: financialIntent.enabled,
+        financialIntentReason: financialIntent.reason,
+        financialIntentKeyword: financialIntent.matchedKeyword,
+        kbSnippetCount: selectedKbSnippets.length,
         calcStatus,
         errorCode,
         model: openAiModel,
@@ -843,6 +920,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (financialIntent.enabled && selectedKbSnippets.length > 0) {
+      const kbCfoText = selectedKbSnippets
+        .map((snippet, index) => {
+          return `${index + 1}) ${snippet.title}\n${snippet.content}`;
+        })
+        .join("\n\n");
+
+      promptSections.push(
+        [
+          "KB_CFO_SNIPPETS:",
+          kbCfoText,
+          "INSTRUCCION_KB_CFO:",
+          "Usa estos snippets solo si aportan respuesta práctica a la pregunta actual.",
+        ].join("\n"),
+      );
+    }
+
     if (taxIntentDetected) {
       const calcActualJson = JSON.stringify(calcActualPayload, null, 2);
       const kbResumenJson = JSON.stringify(KB_RESUMEN, null, 2);
@@ -858,35 +952,46 @@ export async function POST(request: NextRequest) {
           "KB_RESUMEN:",
           kbResumenJson,
           "INSTRUCCION_FISCAL:",
-          "Regla #0 (anti-invención): SOLO usa cifras que existan en FINANCIAL_CONTEXT / CALCULO_ACTUAL. Si falta un número, NO inventes.",
-          "Regla #1 (prioridad de datos): Si FINANCIAL_CONTEXT.monthly_inputs existe => usar esos valores para cualquier cálculo. Si monthly_inputs es null pero hay fallback_monthly_inputs => decir que se está usando el fallback y pedir confirmación.",
-          "Regla #2 (respuesta estructurada): siempre responde en este orden: (1) Resumen de lo que sé (en bullets con números), (2) Cálculo/estimación (si aplica) con fórmula, (3) Recomendación operativa accionable (qué apartar y cómo), (4) 1-2 preguntas mínimas si falta algo.",
-          "Regla #3 (si ya hay datos suficientes, NO pidas contador): Si tienes income_cop, deductible_expenses_cop, vat_collected_cop y taxpayer_type/regimen => haz la estimación MVP y luego (opcional) indica límites del MVP.",
+          "Regla #0 (anti-invención): SOLO usa cifras que existan en FINANCIAL_CONTEXT o CALCULO_ACTUAL. Si falta un número, NO inventes.",
+          "Regla #1 (prioridad de datos): Si FINANCIAL_CONTEXT.monthly_inputs existe => usar esos valores. Si monthly_inputs es null pero hay fallback_monthly_inputs => decir explícitamente que estás usando el último mes disponible y pedir confirmación.",
+          "Regla #2 (estructura obligatoria de respuesta): Siempre responder en este orden:",
+          "   (1) Resumen de lo que sé (bullets numerados).",
+          "   (2) Cálculo o diagnóstico con fórmulas visibles si aplica.",
+          "   (3) Estrategia operativa concreta (qué hacer hoy).",
+          "   (4) Máximo 1-2 preguntas si realmente falta algo crítico.",
+          "Regla #3: Si hay income_cop, deductible_expenses_cop, vat_collected_cop y taxpayer_type/regimen => hacer cálculo MVP automáticamente sin pedir contador.",
+          "Regla #4 (jurídica ordinario con datos suficientes): aplicar el algoritmo MVP explícito solo cuando taxpayer_type='juridica', regimen='ordinario' y monthly_inputs exista.",
           "",
-          "ALGORITMO MVP — CUANDO HAY DATOS SUFICIENTES:",
-          "A) Siempre separar IVA: si vat_collected_cop > 0 => iva_to_separate = vat_collected_cop (no es ingreso).",
+          "ALGORITMO MVP — JURÍDICA ORDINARIO:",
+          "A) iva_to_separate = (vat_collected_cop > 0) ? vat_collected_cop : 0.",
+          "B) ingreso_base_sin_iva = income_cop - vat_collected_cop.",
+          "C) utilidad_estimada = ingreso_base_sin_iva - deductible_expenses_cop.",
+          "D) renta_bruta_estimada = max(utilidad_estimada, 0) * 0.35.",
+          "E) renta_neta_estimada = max(renta_bruta_estimada - withholdings_cop, 0).",
+          "F) total_provision_mvp = iva_to_separate + renta_neta_estimada.",
+          "G) Mostrar fórmulas y números concretos (sin inventar cifras).",
+          "H) Si utilidad_estimada <= 0: renta_neta_estimada = 0, IVA se separa igual si existe.",
           "",
-          "B) Si taxpayer_type = 'juridica' Y regimen = 'ordinario' Y monthly_inputs existe:",
-          "   1) ingreso_base_sin_iva = income_cop - vat_collected_cop",
-          "   2) utilidad_estimada = ingreso_base_sin_iva - deductible_expenses_cop",
-          "   3) renta_bruta_estimada = max(utilidad_estimada, 0) * 0.35",
-          "   4) renta_neta_estimada = max(renta_bruta_estimada - withholdings_cop, 0)",
-          "   5) total_provision_mvp = iva_to_separate + renta_neta_estimada",
-          "   6) Mostrar números con fórmulas y dar una recomendación concreta: 'Aparta hoy: IVA X + Renta Y = Total Z'.",
-          "   7) Si utilidad_estimada <= 0: explicar que renta estimada queda en 0 por utilidad no positiva, pero IVA se separa igual si existe.",
+          "MODO_CFO (obligatorio si la pregunta es estratégica o de caja):",
+          "1. Diagnosticar liquidez actual.",
+          "2. Evaluar riesgo (liquidez, sanción, flujo negativo).",
+          "3. Proponer 2-3 estrategias legales priorizadas.",
+          "4. Indicar impacto de cada estrategia.",
+          "5. No dar recomendaciones ilegales ni evasión.",
           "",
-          "C) Si taxpayer_type = 'natural' (cualquier regimen) y hay CALCULO_ACTUAL.ok=true:",
-          "   - Usar el breakdown de CALCULO_ACTUAL como verdad (no recalcular diferente).",
-          "",
-          "D) Si faltan campos clave (taxpayer_type, regimen, vat_responsible, vat_periodicity, monthly_fixed_costs_cop, monthly_payroll_cop, monthly_debt_payments_cop):",
-          "   - NO inventes. Usa missing_fields. Pide SOLO 1-2 datos máximos, con opciones cerradas si se puede.",
-          "",
-          "EJEMPLOS DE CONSULTAS 'FUERA DE LA CAJA' (SIEMPRE LEGALES):",
-          "- 'No lo quiero pagar de golpe': pedir monto total, fecha límite, y cuánto puede apartar hoy; proponer: (a) apartar IVA inmediatamente, (b) programar transferencias semanales, (c) separar en subcuentas, (d) acuerdo de pago con DIAN si aplica, (e) priorizar por vencimiento y sanción.",
-          "- 'Domiciliar el pago': explicar que se puede programar desde banco/tesorería; preguntar solo el canal (banco/contador) y fecha objetivo.",
+          "ESTRATEGIAS LEGALES DISPONIBLES:",
+          "- Separar IVA inmediatamente en subcuenta.",
+          "- Si piden no pagarlo de golpe: pedir monto total, fecha límite y cuánto puede apartar hoy; ofrecer acuerdo DIAN (si aplica), transferencias semanales, subcuentas y priorización por vencimiento/sanción.",
+          "- Si piden domiciliar: explicar programación desde banco/tesorería/calendario; pedir canal y fecha objetivo.",
+          "- Programar provisiones semanales en vez de mensuales.",
+          "- Priorizar obligaciones por riesgo de sanción.",
+          "- Negociar plazos con proveedores antes que con DIAN.",
+          "- Evaluar acuerdo de pago formal con DIAN si aplica.",
+          "- Ajustar estructura de costos si margen < 20%.",
+          "- Simular impacto antes de contratar o endeudarse.",
           "",
           "SEGURIDAD:",
-          "No des pasos ilegales, evasión, facturación falsa, ocultamiento de ingresos, ni trucos para eludir obligaciones.",
+          "No dar consejos de evasión, ocultamiento de ingresos, facturación falsa o prácticas ilegales."
         ].join("\n"),
       );
     }
@@ -938,6 +1043,10 @@ export async function POST(request: NextRequest) {
         console.info("[api/chat] Tax debug summary", {
           taxIntentDetected,
           taxIntentKeyword,
+          financialIntentEnabled: financialIntent.enabled,
+          financialIntentReason: financialIntent.reason,
+          financialIntentKeyword: financialIntent.matchedKeyword,
+          kbSnippetCount: selectedKbSnippets.length,
           calcStatus,
           errorCode,
           model: openAiModel,
@@ -978,6 +1087,10 @@ export async function POST(request: NextRequest) {
         console.error("[api/chat] Tax debug summary", {
           taxIntentDetected,
           taxIntentKeyword,
+          financialIntentEnabled: financialIntent.enabled,
+          financialIntentReason: financialIntent.reason,
+          financialIntentKeyword: financialIntent.matchedKeyword,
+          kbSnippetCount: selectedKbSnippets.length,
           calcStatus,
           errorCode,
           model: openAiModel,
