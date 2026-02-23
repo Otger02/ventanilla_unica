@@ -82,9 +82,22 @@ type FinancialContextPayload = {
     withholdings_cop: number;
     vat_collected_cop: number;
   } | null;
+  fallback_monthly_inputs: {
+    period: {
+      year: number;
+      month: number;
+    };
+    inputs: {
+      income_cop: number;
+      deductible_expenses_cop: number;
+      withholdings_cop: number;
+      vat_collected_cop: number;
+    };
+  } | null;
   monthly_inputs_status:
     | "ok"
-    | "no_record_for_period"
+    | "fallback_used"
+    | "no_data_at_all"
     | "not_authenticated"
     | "monthly_inputs_query_error";
 };
@@ -331,6 +344,26 @@ function maskUserId(userId: string | null): string | null {
   return userId.slice(0, 8);
 }
 
+function formatPeriodLabelEs(year: number, month: number): string {
+  const monthNames = [
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+  ];
+
+  const monthIndex = Math.min(Math.max(month - 1, 0), 11);
+  return `${monthNames[monthIndex]} ${year}`;
+}
+
 async function getFinancialContextPayload(
   supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
   userId: string | null,
@@ -344,6 +377,7 @@ async function getFinancialContextPayload(
       period: { year, month },
       profile_snapshot: buildProfileSnapshot(null),
       monthly_inputs: null,
+      fallback_monthly_inputs: null,
       monthly_inputs_status: "not_authenticated",
     };
   }
@@ -373,16 +407,62 @@ async function getFinancialContextPayload(
       period: { year, month },
       profile_snapshot: profileSnapshot,
       monthly_inputs: null,
+      fallback_monthly_inputs: null,
       monthly_inputs_status: "monthly_inputs_query_error",
     };
   }
 
   if (!monthlyInputData) {
+    const { data: fallbackMonthlyInputData, error: fallbackMonthlyInputError } = await supabase
+      .from("monthly_tax_inputs_co")
+      .select(
+        "year, month, income_cop, deductible_expenses_cop, withholdings_cop, vat_collected_cop",
+      )
+      .eq("user_id", userId)
+      .order("year", { ascending: false })
+      .order("month", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (fallbackMonthlyInputError) {
+      return {
+        period: { year, month },
+        profile_snapshot: profileSnapshot,
+        monthly_inputs: null,
+        fallback_monthly_inputs: null,
+        monthly_inputs_status: "monthly_inputs_query_error",
+      };
+    }
+
+    if (!fallbackMonthlyInputData) {
+      return {
+        period: { year, month },
+        profile_snapshot: profileSnapshot,
+        monthly_inputs: null,
+        fallback_monthly_inputs: null,
+        monthly_inputs_status: "no_data_at_all",
+      };
+    }
+
+    const fallbackInputs = fallbackMonthlyInputData as MonthlyTaxInputRow;
+
     return {
       period: { year, month },
       profile_snapshot: profileSnapshot,
       monthly_inputs: null,
-      monthly_inputs_status: "no_record_for_period",
+      fallback_monthly_inputs: {
+        period: {
+          year: fallbackInputs.year,
+          month: fallbackInputs.month,
+        },
+        inputs: {
+          income_cop: fallbackInputs.income_cop,
+          deductible_expenses_cop: fallbackInputs.deductible_expenses_cop,
+          withholdings_cop: fallbackInputs.withholdings_cop,
+          vat_collected_cop: fallbackInputs.vat_collected_cop,
+        },
+      },
+      monthly_inputs_status: "fallback_used",
     };
   }
 
@@ -397,6 +477,7 @@ async function getFinancialContextPayload(
       withholdings_cop: inputs.withholdings_cop,
       vat_collected_cop: inputs.vat_collected_cop,
     },
+    fallback_monthly_inputs: null,
     monthly_inputs_status: "ok",
   };
 }
@@ -713,6 +794,27 @@ export async function POST(request: NextRequest) {
         "Si monthly_inputs es null, pide al usuario llenar el mes o confirma si usamos el último mes disponible.",
       ].join("\n"),
     ];
+
+    if (
+      financialContextPayload.monthly_inputs_status === "fallback_used" &&
+      financialContextPayload.fallback_monthly_inputs
+    ) {
+      const currentPeriodLabel = formatPeriodLabelEs(
+        financialContextPayload.period.year,
+        financialContextPayload.period.month,
+      );
+      const fallbackPeriodLabel = formatPeriodLabelEs(
+        financialContextPayload.fallback_monthly_inputs.period.year,
+        financialContextPayload.fallback_monthly_inputs.period.month,
+      );
+
+      promptSections.push(
+        [
+          "INSTRUCCION_FALLBACK_MENSUAL:",
+          `Si usas fallback, debes decir explícitamente: "No veo datos para ${currentPeriodLabel}; estoy usando ${fallbackPeriodLabel}. ¿Confirmas o prefieres actualizar este mes?"`,
+        ].join("\n"),
+      );
+    }
 
     if (taxIntentDetected) {
       const calcActualJson = JSON.stringify(calcActualPayload, null, 2);
