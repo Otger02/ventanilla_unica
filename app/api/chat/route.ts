@@ -51,6 +51,44 @@ type MonthlyTaxInputRow = {
   vat_collected_cop: number;
 };
 
+type FinancialContextPayload = {
+  period: {
+    year: number;
+    month: number;
+  };
+  profile_snapshot: {
+    taxpayer_type: "natural" | "juridica" | "individual" | "company" | "unknown";
+    regimen: "simple" | "ordinario" | "unknown";
+    vat_responsible: "yes" | "no" | "unknown";
+    vat_periodicity:
+      | "monthly"
+      | "bimonthly"
+      | "quarterly"
+      | "annual"
+      | "bimestral"
+      | "cuatrimestral"
+      | "anual"
+      | "not_applicable"
+      | "unknown";
+    provision_style: "conservative" | "balanced" | "aggressive";
+    monthly_fixed_costs_cop: number;
+    monthly_payroll_cop: number;
+    monthly_debt_payments_cop: number;
+    municipality: string | null;
+  };
+  monthly_inputs: {
+    income_cop: number;
+    deductible_expenses_cop: number;
+    withholdings_cop: number;
+    vat_collected_cop: number;
+  } | null;
+  monthly_inputs_status:
+    | "ok"
+    | "no_record_for_period"
+    | "not_authenticated"
+    | "monthly_inputs_query_error";
+};
+
 type CurrentTaxCalculation =
   | {
       ok: true;
@@ -243,9 +281,11 @@ function buildProfileSnapshot(profileData: UserTaxProfileRow | null) {
     regimen: profileData?.regimen ?? "unknown",
     vat_responsible: profileData?.vat_responsible ?? "unknown",
     vat_periodicity: profileData?.vat_periodicity ?? "unknown",
+    provision_style: profileData?.provision_style ?? "balanced",
     monthly_fixed_costs_cop: profileData?.monthly_fixed_costs_cop ?? 0,
     monthly_payroll_cop: profileData?.monthly_payroll_cop ?? 0,
     monthly_debt_payments_cop: profileData?.monthly_debt_payments_cop ?? 0,
+    municipality: profileData?.municipality ?? null,
   };
 }
 
@@ -289,6 +329,76 @@ function maskUserId(userId: string | null): string | null {
   }
 
   return userId.slice(0, 8);
+}
+
+async function getFinancialContextPayload(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  userId: string | null,
+): Promise<FinancialContextPayload> {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+
+  if (!userId) {
+    return {
+      period: { year, month },
+      profile_snapshot: buildProfileSnapshot(null),
+      monthly_inputs: null,
+      monthly_inputs_status: "not_authenticated",
+    };
+  }
+
+  const { data: profileData } = await supabase
+    .from("user_tax_profile_co")
+    .select(
+      "taxpayer_type, regimen, vat_responsible, vat_periodicity, provision_style, monthly_fixed_costs_cop, monthly_payroll_cop, monthly_debt_payments_cop, municipality",
+    )
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const profileSnapshot = buildProfileSnapshot((profileData as UserTaxProfileRow | null) ?? null);
+
+  const { data: monthlyInputData, error: monthlyInputError } = await supabase
+    .from("monthly_tax_inputs_co")
+    .select(
+      "year, month, income_cop, deductible_expenses_cop, withholdings_cop, vat_collected_cop",
+    )
+    .eq("user_id", userId)
+    .eq("year", year)
+    .eq("month", month)
+    .maybeSingle();
+
+  if (monthlyInputError) {
+    return {
+      period: { year, month },
+      profile_snapshot: profileSnapshot,
+      monthly_inputs: null,
+      monthly_inputs_status: "monthly_inputs_query_error",
+    };
+  }
+
+  if (!monthlyInputData) {
+    return {
+      period: { year, month },
+      profile_snapshot: profileSnapshot,
+      monthly_inputs: null,
+      monthly_inputs_status: "no_record_for_period",
+    };
+  }
+
+  const inputs = monthlyInputData as MonthlyTaxInputRow;
+
+  return {
+    period: { year, month },
+    profile_snapshot: profileSnapshot,
+    monthly_inputs: {
+      income_cop: inputs.income_cop,
+      deductible_expenses_cop: inputs.deductible_expenses_cop,
+      withholdings_cop: inputs.withholdings_cop,
+      vat_collected_cop: inputs.vat_collected_cop,
+    },
+    monthly_inputs_status: "ok",
+  };
 }
 
 async function getCurrentTaxCalculation(
@@ -550,6 +660,11 @@ export async function POST(request: NextRequest) {
     );
     contextLines.push(`Usuario: ${message}`);
 
+    const financialContextPayload = await getFinancialContextPayload(
+      supabase,
+      authenticatedUserId,
+    );
+
     const taxIntentDetected = hasTaxIntent(message);
     let calcActualPayload: CurrentTaxCalculation | null = null;
 
@@ -591,6 +706,12 @@ export async function POST(request: NextRequest) {
 
     const promptSections = [
       `Contexto de conversacion (ultimos 10 mensajes):\n${contextLines.join("\n")}`,
+      "FINANCIAL_CONTEXT:\n" + JSON.stringify(financialContextPayload, null, 2),
+      [
+        "INSTRUCCION_FINANCIAL_CONTEXT:",
+        "Si FINANCIAL_CONTEXT contiene valores numéricos, debes usarlos. No inventes cifras ni uses ejemplos hipotéticos.",
+        "Si monthly_inputs es null, pide al usuario llenar el mes o confirma si usamos el último mes disponible.",
+      ].join("\n"),
     ];
 
     if (taxIntentDetected) {
