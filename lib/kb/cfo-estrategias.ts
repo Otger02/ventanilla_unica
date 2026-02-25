@@ -8,31 +8,47 @@ export type CfoKbSnippet = {
 export const KB_CFO_SNIPPETS: CfoKbSnippet[] = [
    {
       id: "iva-separacion",
-      keywords: ["iva", "impuestos", "dian", "provision", "apartar", "separar"],
+      keywords: ["iva", "impuestos", "vencimiento iva", "apartar", "separar"],
       title: "IVA no es ingreso",
       content:
          "El IVA cobrado no es utilidad del negocio.\n" +
          "Sepáralo en una subcuenta el mismo día del cobro.\n" +
          "No mezclar IVA con gasto operativo.\n" +
-         "Si no hay caja suficiente, prioriza separar IVA antes de otros egresos discrecionales.",
+         "Si falta caja, planifica apartes progresivos hasta vencimiento.",
    },
    {
       id: "cuotas-legales-dian",
-      keywords: ["cuotas", "no pagar de golpe", "acuerdo", "dian", "deuda", "plazo"],
+      keywords: [
+         "pagar en cuotas",
+         "no pagarlo de golpe",
+         "no pagar de golpe",
+         "acuerdo dian",
+         "acuerdo de pago",
+         "diferir",
+         "plazo",
+      ],
       title: "Pagos en cuotas (legal)",
       content:
          "Si no puedes pagar de una vez, define monto total, fecha límite y abono hoy.\n" +
-         "Opciones legales: acuerdo de pago con DIAN (si aplica) y provisión semanal.\n" +
+         "Opciones legales: acuerdo de pago con DIAN (si aplica) y provisión por tramos.\n" +
          "Prioriza obligaciones con mayor sanción e interés.\n" +
          "Evita financiar impuestos con deuda costosa si hay alternativa operativa.",
    },
    {
       id: "domiciliar-pagos",
-      keywords: ["domiciliar", "programar", "transferencias", "banco", "tesoreria", "calendario"],
+      keywords: [
+         "domiciliar",
+         "programar transferencias",
+         "programar pagos",
+         "transferencias",
+         "banco",
+         "tesoreria",
+         "calendario",
+      ],
       title: "Programar pagos",
       content:
          "Puedes programar pagos desde banco o tesorería interna.\n" +
-         "Define fecha objetivo y frecuencia (semanal/quincenal).\n" +
+         "Define fecha objetivo y frecuencia (diaria/semanal/quincenal).\n" +
          "Usa recordatorios de calendario y confirmación de ejecución.\n" +
          "Mantén trazabilidad por obligación y periodo.",
    },
@@ -42,37 +58,27 @@ export const KB_CFO_SNIPPETS: CfoKbSnippet[] = [
          "priorizar",
          "priorizo",
          "vencimiento",
-         "nómina",
          "nomina",
-         "caja",
+         "nómina",
          "liquidez",
-         "urgente",
          "justo de caja",
+         "urgente",
       ],
       title: "Prioriza por vencimiento y riesgo",
       content:
          "Prioriza por fecha de vencimiento, sanción potencial e impacto operativo.\n" +
-         "El IVA siempre se separa; evita usarlo como caja de operación.\n" +
-         "Si estás justo, aporta semanalmente a una subcuenta de impuestos y paga completo en vencimiento.\n" +
-         "Si no alcanzas, evalúa acuerdo de pago con DIAN por la vía legal.",
-      },
-      {
-      id: "priorizacion-obligaciones",
-      keywords: ["priorizar", "vencimiento", "sancion", "operacion", "intereses"],
-      title: "Priorización por riesgo",
-      content:
-         "Orden sugerido: obligaciones con sanción fiscal alta, luego intereses altos, luego operativas.\n" +
-         "No priorices solo por valor; prioriza por costo total de incumplimiento.\n" +
-         "Revisa semanalmente vencimientos de los próximos 30 días.",
+         "El IVA se protege primero como obligación tributaria.\n" +
+         "Si estás justo, arma cronograma de aportes hasta vencimiento.\n" +
+         "Si no alcanzas, evalúa acuerdo formal con DIAN por vía legal.",
    },
    {
       id: "flujo-subcuentas",
-      keywords: ["flujo", "caja", "subcuentas", "semanal", "liquidez"],
+      keywords: ["flujo", "caja", "liquidez", "subcuentas", "caja alternativa"],
       title: "Flujo de caja disciplinado",
       content:
          "Separa cuentas: operación, impuestos y reserva.\n" +
-         "Haz apartes semanales automáticos para bajar presión de cierre mensual.\n" +
-         "Meta mínima: 1 mes de gastos fijos en liquidez operativa.",
+         "Define cuánto mover cada periodo y revisa ejecución.\n" +
+         "Haz apartes frecuentes para bajar presión del vencimiento.",
    },
    {
       id: "contratacion-costo-total",
