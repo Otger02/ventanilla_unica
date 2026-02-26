@@ -133,3 +133,53 @@ Objetivo: validar comportamiento del chat en escenarios estratégicos de IVA/caj
   - Ninguno
 - **Modo esperado:**
   - `ANALISIS_INICIAL`
+
+## Caso 11 — Scheduling de proveedores (sin mezclar DIAN)
+- **Input usuario:**
+  - "Necesito organizar pago a proveedores y facturas pendientes este mes."
+- **Expected behavior:**
+  - Enfoca la respuesta en cuentas por pagar/proveedores.
+  - Propone calendario de pagos y batching de fechas.
+  - No fuerza priorización DIAN/IVA si no se menciona.
+- **Snippets esperados (ids):**
+  - `domiciliar-pagos`
+  - `proveedores-calendario-pagos`
+- **Modo esperado:**
+  - `ANALISIS_INICIAL`
+
+## Caso 12 — Programar pagos DIAN
+- **Input usuario:**
+  - "Quiero programar pagos a DIAN para no pagar de golpe."
+- **Expected behavior:**
+  - Mantiene enfoque tributario (DIAN/IVA/impuestos).
+  - Incluye priorización por vencimiento y riesgo.
+  - No confunde pagos de proveedores con pago tributario.
+- **Snippets esperados (ids):**
+  - `priorizacion-vencimientos`
+- **Modo esperado:**
+  - `ANALISIS_INICIAL`
+
+## Caso 13 — Justo de caja: nómina vs IVA
+- **Input usuario:**
+  - "Estoy reventado de caja, ¿qué pago primero: nómina o IVA?"
+- **Expected behavior:**
+  - Aplica triage por vencimiento real y continuidad operativa.
+  - No sugiere pago parcial de nómina.
+  - Si falta dato de monto para cronograma, pide solo ese dato.
+- **Snippets esperados (ids):**
+  - `triage-caja-orden-pagos`
+- **Modo esperado:**
+  - `ANALISIS_INICIAL`
+
+## Caso 14 — IVA en 10 días con caja parcial
+- **Input usuario:**
+  - "El IVA vence en 10 días. Tengo caja parcial de 400.000 para una obligación de 1.200.000."
+- **Expected behavior:**
+  - Calcula faltante con datos dados.
+  - Propone plan por días (Día 1..Día 10) sin inventar día 11.
+  - Prioriza acciones de liquidez antes de escalar a DIAN.
+- **Snippets esperados (ids):**
+  - `iva-separacion`
+  - `priorizacion-vencimientos`
+- **Modo esperado:**
+  - `ANALISIS_INICIAL`

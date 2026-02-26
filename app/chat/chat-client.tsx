@@ -1,9 +1,16 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { ChatBubble } from "@/components/ui/chat-bubble";
+import { Field } from "@/components/ui/field";
+import { PageShell } from "@/components/ui/page-shell";
+import { SectionCard } from "@/components/ui/section-card";
+import { Tabs } from "@/components/ui/tabs";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -66,6 +73,20 @@ type TaxHistoryResponse = {
   items: TaxHistoryItem[];
 };
 
+type InvoiceItem = {
+  id: string;
+  created_at: string;
+  status: "pending" | "scheduled" | "paid" | "disputed";
+  total_cop: number | null;
+  supplier_name: string | null;
+  filename: string | null;
+  size_bytes: number | null;
+};
+
+type InvoicesResponse = {
+  invoices: InvoiceItem[];
+};
+
 const exampleQuestions = [
   "¿Cuánto debo provisionar para impuestos este mes?",
   "¿Qué gastos puedo deducir como independiente?",
@@ -74,6 +95,85 @@ const exampleQuestions = [
   "¿Cómo organizo mis finanzas este mes?",
   "¿Qué documentos debería guardar?",
 ];
+
+function formatAssistantMarkdown(raw: string): string {
+  const lines = raw.replace(/\r\n/g, "\n").trim().split("\n");
+  const normalizedLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    const headingMatch = trimmedLine.match(/^(?:\((\d)\)|(\d)\))\s*(.+)$/);
+
+    if (headingMatch) {
+      const number = headingMatch[1] || headingMatch[2];
+      const headingContent = headingMatch[3].trim();
+      let headingTitle = headingContent;
+      let headingBody: string | null = null;
+
+      if (headingContent.includes(": - ")) {
+        const [titlePart, bodyPart] = headingContent.split(": - ", 2);
+        headingTitle = titlePart.trim();
+        headingBody = `- ${bodyPart.trim()}`;
+      } else if (headingContent.includes(": ")) {
+        const [titlePart, bodyPart] = headingContent.split(": ", 2);
+        headingTitle = titlePart.trim();
+        headingBody = bodyPart.trim();
+      }
+
+      headingTitle = headingTitle.replace(/:\s*$/, "").trim();
+
+      if (normalizedLines.length > 0 && normalizedLines[normalizedLines.length - 1] !== "") {
+        normalizedLines.push("");
+      }
+
+      normalizedLines.push(`## (${number}) ${headingTitle}`);
+
+      if (headingBody) {
+        if (headingBody.includes(" - ")) {
+          headingBody
+            .split(" - ")
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .forEach((item) => normalizedLines.push(`- ${item.replace(/^-\s*/, "")}`));
+        } else {
+          normalizedLines.push(headingBody);
+        }
+      }
+
+      continue;
+    }
+
+    if (trimmedLine.includes(": - ")) {
+      const [prefix, suffix] = trimmedLine.split(": - ", 2);
+      const items = suffix
+        .split(" - ")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      normalizedLines.push(`${prefix}:`);
+      items.forEach((item) => normalizedLines.push(`- ${item}`));
+      continue;
+    }
+
+    const previousLine = normalizedLines[normalizedLines.length - 1] ?? "";
+    if (previousLine.startsWith("## ") && trimmedLine.includes(" - ") && !trimmedLine.startsWith("-")) {
+      const items = trimmedLine
+        .split(" - ")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      items.forEach((item) => normalizedLines.push(`- ${item}`));
+      continue;
+    }
+
+    normalizedLines.push(trimmedLine);
+  }
+
+  let formatted = normalizedLines.join("\n");
+  formatted = formatted.replace(/\n{3,}/g, "\n\n");
+
+  return formatted.trim();
+}
 
 export function ChatClient({
   demoMode,
@@ -123,6 +223,13 @@ export function ChatClient({
   const [deductibleExpensesCop, setDeductibleExpensesCop] = useState("0");
   const [withholdingsCop, setWithholdingsCop] = useState("0");
   const [vatCollectedCop, setVatCollectedCop] = useState("0");
+  const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
+  const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
+  const [isUploadingInvoice, setIsUploadingInvoice] = useState(false);
+  const [invoicesError, setInvoicesError] = useState<string | null>(null);
+  const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
+  const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
+  const invoiceInputRef = useRef<HTMLInputElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -153,6 +260,38 @@ export function ChatClient({
       setIsLoadingHistory(false);
     }
   }
+
+  const loadInvoices = useCallback(async () => {
+    if (demoMode) {
+      setInvoices([]);
+      setInvoicesError(null);
+      return;
+    }
+
+    setIsLoadingInvoices(true);
+    setInvoicesError(null);
+
+    try {
+      const response = await fetch("/api/invoices", { method: "GET" });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error("Inicia sesión para ver facturas.");
+        }
+        throw new Error((data as { error?: string }).error || "No se pudieron cargar facturas.");
+      }
+
+      const parsed = data as InvoicesResponse;
+      setInvoices(parsed.invoices ?? []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudieron cargar facturas.";
+      setInvoices([]);
+      setInvoicesError(message);
+    } finally {
+      setIsLoadingInvoices(false);
+    }
+  }, [demoMode]);
 
   useEffect(() => {
     async function loadEstimate() {
@@ -241,7 +380,8 @@ export function ChatClient({
     void loadEstimate();
     void loadTaxData();
     void loadHistory(historyMonths);
-  }, [currentMonth, currentYear, historyMonths]);
+    void loadInvoices();
+  }, [currentMonth, currentYear, historyMonths, loadInvoices]);
 
   function formatCop(value: number): string {
     return new Intl.NumberFormat("es-CO", {
@@ -278,6 +418,32 @@ export function ChatClient({
   function getMonthLabel(year: number, month: number): string {
     const date = new Date(year, month - 1, 1);
     return new Intl.DateTimeFormat("es-CO", { month: "short", year: "2-digit" }).format(date);
+  }
+
+  function formatDateTime(value: string): string {
+    return new Intl.DateTimeFormat("es-CO", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  }
+
+  function formatFileSize(value: number | null): string {
+    if (value === null || Number.isNaN(value)) {
+      return "—";
+    }
+
+    if (value < 1024) {
+      return `${value} B`;
+    }
+
+    if (value < 1024 * 1024) {
+      return `${(value / 1024).toFixed(1)} KB`;
+    }
+
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
 
   async function handleSignOut() {
@@ -477,9 +643,89 @@ export function ChatClient({
     }
   }
 
+  async function handleInvoiceUpload(file: File) {
+    if (isUploadingInvoice || demoMode) {
+      return;
+    }
+
+    setIsUploadingInvoice(true);
+    setInvoicesError(null);
+    setInvoiceUploadMessage(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/invoices/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        status?: "created" | "duplicate";
+        error?: string;
+      };
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error("Inicia sesión para subir facturas.");
+        }
+
+        if (response.status === 413) {
+          throw new Error("Archivo demasiado grande.");
+        }
+
+        throw new Error(data.error || "No se pudo subir la factura.");
+      }
+
+      setInvoiceUploadMessage(
+        data.status === "duplicate"
+          ? "Archivo duplicado: ya existe una factura asociada."
+          : "Factura cargada correctamente.",
+      );
+      await loadInvoices();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo subir la factura.";
+      setInvoicesError(message);
+    } finally {
+      setIsUploadingInvoice(false);
+    }
+  }
+
+  function handleInvoicePickerClick() {
+    if (isUploadingInvoice || demoMode) {
+      return;
+    }
+
+    invoiceInputRef.current?.click();
+  }
+
+  function handleInvoiceFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0];
+
+    if (!selectedFile) {
+      return;
+    }
+
+    void handleInvoiceUpload(selectedFile);
+    event.target.value = "";
+  }
+
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-4 p-4 sm:p-6 lg:flex-row">
-      <div className="flex min-w-0 flex-1 flex-col">
+    <PageShell>
+      <div className="flex min-h-screen w-full flex-col gap-4 lg:flex-row">
+      <div className="mb-1 lg:hidden">
+        <Tabs
+          value={mobileTab}
+          onChange={(value) => setMobileTab(value as "chat" | "datos")}
+          items={[
+            { value: "chat", label: "Chat" },
+            { value: "datos", label: "Datos" },
+          ]}
+        />
+      </div>
+
+      <div className={`${mobileTab === "chat" ? "flex" : "hidden"} min-w-0 flex-1 flex-col lg:flex`}>
         {demoMode ? (
           <div className="rounded-md border border-amber-400 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
             DEMO MODE
@@ -496,18 +742,19 @@ export function ChatClient({
         <div className="mt-3 flex items-center justify-between gap-3">
           <h1 className="text-2xl font-semibold">Chat</h1>
           {!demoMode ? (
-            <button
+            <Button
               type="button"
               onClick={handleSignOut}
-              className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              variant="outline"
+              size="md"
               disabled={isSigningOut}
             >
               {isSigningOut ? "Cerrando..." : "Cerrar sesion"}
-            </button>
+            </Button>
           ) : null}
         </div>
 
-        <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+        <Card className="mt-4">
           <h2 className="text-base font-semibold">Provisión estimada del mes</h2>
 
           {isLoadingEstimate ? (
@@ -553,9 +800,9 @@ export function ChatClient({
               {estimateError || "Completa tus datos del mes para calcular."}
             </p>
           ) : null}
-        </div>
+        </Card>
 
-        <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+        <Card className="mt-4">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-base font-semibold">Histórico</h2>
             <select
@@ -665,27 +912,41 @@ export function ChatClient({
               </div>
             </>
           ) : null}
-        </div>
+        </Card>
 
-        <div className="mt-4 flex-1 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+        <Card className="mt-4 flex-1 overflow-y-auto">
           {messages.length === 0 ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
               Aun no hay mensajes.
             </p>
           ) : (
             <ul className="space-y-3">
-              {messages.map((messageItem, index) => (
-                <li
-                  key={`${messageItem.role}-${index}`}
-                  className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
-                    messageItem.role === "user"
-                      ? "ml-auto bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                      : "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
-                  }`}
-                >
-                  {messageItem.content}
-                </li>
-              ))}
+              {messages.map((messageItem, index) => {
+                const renderedContent =
+                  messageItem.role === "assistant"
+                    ? formatAssistantMarkdown(messageItem.content)
+                    : messageItem.content;
+
+                return (
+                  <li key={`${messageItem.role}-${index}`}>
+                    <ChatBubble
+                      role={messageItem.role}
+                      content={renderedContent}
+                      onCopy={() => {
+                        if (typeof window !== "undefined") {
+                          void navigator.clipboard?.writeText(renderedContent);
+                        }
+                      }}
+                      onSave={() => {
+                        console.info("[chat] save stub", {
+                          index,
+                          role: messageItem.role,
+                        });
+                      }}
+                    />
+                  </li>
+                );
+              })}
               {isSending ? (
                 <li className="max-w-[85%] rounded-lg bg-zinc-100 px-3 py-2 text-sm text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
                   escribiendo...
@@ -694,20 +955,25 @@ export function ChatClient({
             </ul>
           )}
           <div ref={messagesEndRef} />
-        </div>
+        </Card>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          {exampleQuestions.map((question) => (
-            <button
-              key={question}
-              type="button"
-              onClick={() => void sendMessage(question)}
-              className="rounded-full border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-900"
-              disabled={isSending}
-            >
-              {question}
-            </button>
-          ))}
+        <div className="mt-4 space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            Sugerencias
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {exampleQuestions.map((question) => (
+              <button
+                key={question}
+                type="button"
+                onClick={() => void sendMessage(question)}
+                className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-700 transition hover:border-zinc-300 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-800"
+                disabled={isSending}
+              >
+                {question}
+              </button>
+            ))}
+          </div>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
@@ -718,18 +984,24 @@ export function ChatClient({
             className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
             disabled={isSending}
           />
-          <button
+          <Button
             type="submit"
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            variant="primary"
+            size="md"
             disabled={isSending}
           >
             {isSending ? "Enviando..." : "Enviar"}
-          </button>
+          </Button>
         </form>
       </div>
 
-      <aside className="w-full rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 lg:mt-[4.25rem] lg:w-96">
-        <h2 className="text-lg font-semibold">Datos fiscales</h2>
+      <Card
+        className={`${mobileTab === "datos" ? "block" : "hidden"} w-full lg:sticky lg:top-4 lg:block lg:w-[380px] xl:w-[420px]`}
+      >
+        <h2 className="text-lg font-semibold tracking-tight">Ficha fiscal</h2>
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+          Ajusta supuestos y revisa tu posición tributaria mensual.
+        </p>
 
         {isLoadingTaxData ? (
           <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Cargando...</p>
@@ -747,98 +1019,131 @@ export function ChatClient({
           </p>
         ) : null}
 
-        <div className="mt-4 space-y-3">
-          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Perfil fiscal</h3>
+        <SectionCard
+          title="Perfil fiscal"
+          description="Configuración base de contribuyente, régimen y estilo de provisión."
+          className="mt-4"
+        >
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Regimen</label>
-          <select
-            value={regimen}
-            onChange={(event) =>
-              setRegimen(event.target.value as "simple" | "ordinario" | "unknown")
-            }
-            title="Seleccionar régimen fiscal"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          >
-            <option value="unknown">Sin definir</option>
-            <option value="simple">Simple</option>
-            <option value="ordinario">Ordinario</option>
-          </select>
-
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Responsable IVA</label>
-          <select
-            value={vatResponsible}
-            onChange={(event) =>
-              setVatResponsible(event.target.value as "yes" | "no" | "unknown")
-            }
-            title="Seleccionar responsabilidad de IVA"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          >
-            <option value="unknown">Sin definir</option>
-            <option value="yes">Si</option>
-            <option value="no">No</option>
-          </select>
-
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">
-            Estilo de provisión
-          </label>
-          <select
-            value={provisionStyle}
-            onChange={(event) =>
-              setProvisionStyle(
-                event.target.value as "conservative" | "balanced" | "aggressive",
-              )
-            }
-            title="Seleccionar estilo de provisión"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          >
-            <option value="conservative">Conservador</option>
-            <option value="balanced">Balanceado</option>
-            <option value="aggressive">Agresivo</option>
-          </select>
-
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Municipio</label>
-          <input
-            value={municipality}
-            onChange={(event) => setMunicipality(event.target.value)}
-            title="Municipio principal de operación"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            placeholder="Ej: Medellin"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          />
-        </div>
-
-        <div className="mt-5 space-y-3">
-          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
-            Compromisos mensuales
-          </h3>
-
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">
-            Tipo de contribuyente
-          </label>
-          <select
-            value={taxpayerType}
-            onChange={(event) => {
-              const nextValue = event.target.value as "natural" | "juridica" | "unknown";
-              setTaxpayerType(nextValue);
-              if (nextValue !== "juridica") {
-                setLegalType("unknown");
+          <Field label="Regimen" hint="Configura tu régimen fiscal actual.">
+            <select
+              value={regimen}
+              onChange={(event) =>
+                setRegimen(event.target.value as "simple" | "ordinario" | "unknown")
               }
-            }}
-            title="Seleccionar tipo de contribuyente"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          >
-            <option value="natural">Natural</option>
-            <option value="juridica">Jurídica</option>
-            <option value="unknown">Unknown</option>
-          </select>
+              title="Seleccionar régimen fiscal"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            >
+              <option value="unknown">Sin definir</option>
+              <option value="simple">Simple</option>
+              <option value="ordinario">Ordinario</option>
+            </select>
+          </Field>
+
+          <Field label="Responsable IVA" hint="Indica si facturas y cobras IVA.">
+            <select
+              value={vatResponsible}
+              onChange={(event) =>
+                setVatResponsible(event.target.value as "yes" | "no" | "unknown")
+              }
+              title="Seleccionar responsabilidad de IVA"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            >
+              <option value="unknown">Sin definir</option>
+              <option value="yes">Si</option>
+              <option value="no">No</option>
+            </select>
+          </Field>
+
+          <Field label="Estilo de provisión" hint="Ajusta el nivel de prudencia al provisionar.">
+            <select
+              value={provisionStyle}
+              onChange={(event) =>
+                setProvisionStyle(
+                  event.target.value as "conservative" | "balanced" | "aggressive",
+                )
+              }
+              title="Seleccionar estilo de provisión"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            >
+              <option value="conservative">Conservador</option>
+              <option value="balanced">Balanceado</option>
+              <option value="aggressive">Agresivo</option>
+            </select>
+          </Field>
+
+          <Field label="Municipio" hint="Municipio principal de operación.">
+            <input
+              value={municipality}
+              onChange={(event) => setMunicipality(event.target.value)}
+              title="Municipio principal de operación"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              placeholder="Ej: Medellin"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
+        </SectionCard>
+
+        <SectionCard
+          title="IVA y provisión"
+          description="Vista rápida del estado estimado para separar y provisionar."
+          className="mt-4"
+        >
+          {isLoadingEstimate ? (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Cargando estimación...</p>
+          ) : estimate ? (
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-600 dark:text-zinc-300">Total provisión</span>
+                <span className="font-medium">{formatCop(estimate.totalProvision)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-600 dark:text-zinc-300">IVA</span>
+                <span>{formatCop(estimate.ivaProvision)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-600 dark:text-zinc-300">Renta</span>
+                <span>{formatCop(estimate.rentaProvision)}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              {estimateError || "Completa datos para calcular provisión."}
+            </p>
+          )}
+        </SectionCard>
+
+        <SectionCard
+          title="Compromisos mensuales"
+          description="Costos recurrentes y obligaciones operativas del negocio."
+          className="mt-4"
+        >
+
+          <Field label="Tipo de contribuyente" hint="Selecciona tu tipo de identificación fiscal.">
+            <select
+              value={taxpayerType}
+              onChange={(event) => {
+                const nextValue = event.target.value as "natural" | "juridica" | "unknown";
+                setTaxpayerType(nextValue);
+                if (nextValue !== "juridica") {
+                  setLegalType("unknown");
+                }
+              }}
+              title="Seleccionar tipo de contribuyente"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            >
+              <option value="natural">Natural</option>
+              <option value="juridica">Jurídica</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </Field>
 
           {taxpayerType === "juridica" ? (
-            <>
-              <label className="block text-xs text-zinc-600 dark:text-zinc-300">Tipo legal</label>
+            <Field label="Tipo legal" hint="Solo aplica para contribuyentes jurídicos.">
               <select
                 value={legalType}
                 onChange={(event) =>
@@ -853,124 +1158,218 @@ export function ChatClient({
                 <option value="other">Otra</option>
                 <option value="unknown">Unknown</option>
               </select>
-            </>
+            </Field>
           ) : null}
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Periodicidad IVA</label>
-          <select
-            value={vatPeriodicity}
-            onChange={(event) =>
-              setVatPeriodicity(
-                event.target.value as "bimestral" | "cuatrimestral" | "anual" | "unknown",
-              )
-            }
-            title="Seleccionar periodicidad de IVA"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          >
-            <option value="bimestral">Bimestral</option>
-            <option value="cuatrimestral">Cuatrimestral</option>
-            <option value="anual">Anual</option>
-            <option value="unknown">Unknown</option>
-          </select>
+          <Field label="Periodicidad IVA" hint="Frecuencia de presentación del IVA.">
+            <select
+              value={vatPeriodicity}
+              onChange={(event) =>
+                setVatPeriodicity(
+                  event.target.value as "bimestral" | "cuatrimestral" | "anual" | "unknown",
+                )
+              }
+              title="Seleccionar periodicidad de IVA"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            >
+              <option value="bimestral">Bimestral</option>
+              <option value="cuatrimestral">Cuatrimestral</option>
+              <option value="anual">Anual</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </Field>
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">
-            Gastos fijos mensuales (COP)
-          </label>
-          <input
-            type="number"
-            min={0}
-            value={monthlyFixedCostsCop}
-            onChange={(event) => setMonthlyFixedCostsCop(event.target.value)}
-            title="Gastos fijos mensuales en pesos colombianos"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          />
+          <Field label="Gastos fijos mensuales (COP)" hint="Valor mensual estimado de gastos fijos." suffix="COP">
+            <input
+              type="number"
+              min={0}
+              value={monthlyFixedCostsCop}
+              onChange={(event) => setMonthlyFixedCostsCop(event.target.value)}
+              title="Gastos fijos mensuales en pesos colombianos"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              placeholder="14.800.000"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Nómina mensual (COP)</label>
-          <input
-            type="number"
-            min={0}
-            value={monthlyPayrollCop}
-            onChange={(event) => setMonthlyPayrollCop(event.target.value)}
-            title="Nómina mensual en pesos colombianos"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          />
+          <Field label="Nómina mensual (COP)" hint="Costo mensual de nómina." suffix="COP">
+            <input
+              type="number"
+              min={0}
+              value={monthlyPayrollCop}
+              onChange={(event) => setMonthlyPayrollCop(event.target.value)}
+              title="Nómina mensual en pesos colombianos"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              placeholder="14.800.000"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">
-            Cuotas/deuda mensual (COP)
-          </label>
-          <input
-            type="number"
-            min={0}
-            value={monthlyDebtPaymentsCop}
-            onChange={(event) => setMonthlyDebtPaymentsCop(event.target.value)}
-            title="Cuotas o deuda mensual en pesos colombianos"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          />
-        </div>
+          <Field label="Cuotas/deuda mensual (COP)" hint="Total mensual de obligaciones de deuda." suffix="COP">
+            <input
+              type="number"
+              min={0}
+              value={monthlyDebtPaymentsCop}
+              onChange={(event) => setMonthlyDebtPaymentsCop(event.target.value)}
+              title="Cuotas o deuda mensual en pesos colombianos"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              placeholder="14.800.000"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
+        </SectionCard>
 
-        <div className="mt-5 space-y-3">
-          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
-            Este mes ({currentMonth}/{currentYear})
-          </h3>
+        <SectionCard
+          title={`Este mes (${currentMonth}/${currentYear})`}
+          description="Datos operativos del periodo para estimación fiscal."
+          className="mt-4"
+        >
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Ingresos (COP)</label>
-          <input
-            type="number"
-            min={0}
-            value={incomeCop}
-            onChange={(event) => setIncomeCop(event.target.value)}
-            title="Ingresos del mes en pesos colombianos"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          />
+          <Field label="Ingresos (COP)" hint="Total de ingresos del periodo." suffix="COP">
+            <input
+              type="number"
+              min={0}
+              value={incomeCop}
+              onChange={(event) => setIncomeCop(event.target.value)}
+              title="Ingresos del mes en pesos colombianos"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              placeholder="14.800.000"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Gastos deducibles (COP)</label>
-          <input
-            type="number"
-            min={0}
-            value={deductibleExpensesCop}
-            onChange={(event) => setDeductibleExpensesCop(event.target.value)}
-            title="Gastos deducibles del mes en pesos colombianos"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          />
+          <Field label="Gastos deducibles (COP)" hint="Total de gastos deducibles del periodo." suffix="COP">
+            <input
+              type="number"
+              min={0}
+              value={deductibleExpensesCop}
+              onChange={(event) => setDeductibleExpensesCop(event.target.value)}
+              title="Gastos deducibles del mes en pesos colombianos"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              placeholder="14.800.000"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">Retenciones (COP)</label>
-          <input
-            type="number"
-            min={0}
-            value={withholdingsCop}
-            onChange={(event) => setWithholdingsCop(event.target.value)}
-            title="Retenciones del mes en pesos colombianos"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          />
+          <Field label="Retenciones (COP)" hint="Retenciones aplicadas en el mes." suffix="COP">
+            <input
+              type="number"
+              min={0}
+              value={withholdingsCop}
+              onChange={(event) => setWithholdingsCop(event.target.value)}
+              title="Retenciones del mes en pesos colombianos"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              placeholder="14.800.000"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
 
-          <label className="block text-xs text-zinc-600 dark:text-zinc-300">IVA cobrado (COP)</label>
-          <input
-            type="number"
-            min={0}
-            value={vatCollectedCop}
-            onChange={(event) => setVatCollectedCop(event.target.value)}
-            title="IVA cobrado del mes en pesos colombianos"
-            className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            disabled={isLoadingTaxData || isSavingTaxData}
-          />
-        </div>
+          <Field label="IVA cobrado (COP)" hint="IVA facturado durante el mes." suffix="COP">
+            <input
+              type="number"
+              min={0}
+              value={vatCollectedCop}
+              onChange={(event) => setVatCollectedCop(event.target.value)}
+              title="IVA cobrado del mes en pesos colombianos"
+              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              placeholder="14.800.000"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
+        </SectionCard>
 
-        <button
+        <SectionCard
+          title="Facturas"
+          description="Carga manual de archivos y listado básico."
+          className="mt-4"
+        >
+          {demoMode ? (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">No disponible en DEMO_MODE.</p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <label htmlFor="invoice-upload-input" className="sr-only">
+                  Archivo de factura
+                </label>
+                <input
+                  ref={invoiceInputRef}
+                  id="invoice-upload-input"
+                  type="file"
+                  accept=".pdf,image/*"
+                  onChange={handleInvoiceFileChange}
+                  title="Seleccionar archivo de factura"
+                  className="hidden"
+                  disabled={isUploadingInvoice}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="md"
+                  className="w-full"
+                  onClick={handleInvoicePickerClick}
+                  disabled={isUploadingInvoice}
+                >
+                  {isUploadingInvoice ? "Subiendo..." : "Subir factura"}
+                </Button>
+              </div>
+
+              {invoiceUploadMessage ? (
+                <p className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-sm text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+                  {invoiceUploadMessage}
+                </p>
+              ) : null}
+
+              {invoicesError ? (
+                <p className="mt-2 rounded-md border border-red-300 bg-red-50 px-2 py-1 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
+                  {invoicesError}
+                </p>
+              ) : null}
+
+              {isLoadingInvoices ? (
+                <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Cargando facturas...</p>
+              ) : invoices.length === 0 ? (
+                <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No hay facturas cargadas.</p>
+              ) : (
+                <div className="mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                  <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                    <thead className="bg-zinc-50 dark:bg-zinc-900">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-medium">Fecha</th>
+                        <th className="px-3 py-2 text-left font-medium">Estado</th>
+                        <th className="px-3 py-2 text-left font-medium">Archivo</th>
+                        <th className="px-3 py-2 text-left font-medium">Tamaño</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-900">
+                      {invoices.map((invoice) => (
+                        <tr key={invoice.id}>
+                          <td className="px-3 py-2">{formatDateTime(invoice.created_at)}</td>
+                          <td className="px-3 py-2">{invoice.status}</td>
+                          <td className="px-3 py-2">{invoice.filename ?? "—"}</td>
+                          <td className="px-3 py-2">{formatFileSize(invoice.size_bytes)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </SectionCard>
+
+        <Button
           type="button"
           onClick={() => void handleSaveTaxData()}
-          className="mt-5 w-full rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          className="mt-5 w-full"
+          variant="primary"
+          size="md"
           disabled={isLoadingTaxData || isSavingTaxData}
         >
           {isSavingTaxData ? "Guardando..." : "Guardar"}
-        </button>
-      </aside>
-    </div>
+        </Button>
+      </Card>
+      </div>
+    </PageShell>
   );
 }

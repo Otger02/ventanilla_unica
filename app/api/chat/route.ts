@@ -338,6 +338,16 @@ function normalizeForIntent(text: string): string {
   return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
+function hashStringValue(value: string): string {
+  let hash = 5381;
+
+  for (let index = 0; index < value.length; index++) {
+    hash = (hash * 33) ^ value.charCodeAt(index);
+  }
+
+  return (hash >>> 0).toString(16);
+}
+
 function detectTaxIntent(message: string): { detected: boolean; matchedKeyword: string | null } {
   const normalizedMessage = normalizeForIntent(message);
 
@@ -373,6 +383,20 @@ function detectFinancialIntent(
   const domiciliarKeywords = ["domiciliar", "programar transferencias", "programar pagos"];
   const liquidezKeywords = ["justo de caja", "liquidez", "flujo", "caja"];
   const ivaKeywords = ["iva", "vencimiento iva"];
+  const rentaKeywords = ["renta", "impuesto de renta", "provision de renta", "provisiono de renta"];
+  const proveedoresKeywords = [
+    "proveedor",
+    "proveedores",
+    "factura",
+    "facturas",
+    "cuentas por pagar",
+    "pagar proveedores",
+  ];
+  const pagosProveedoresSchedulingKeywords = [
+    "programar pagos",
+    "pagos mensuales",
+    "transferencias",
+  ];
 
   const matchedCuotas = cuotasKeywords.find((keyword) => normalizedMessage.includes(keyword));
   if (matchedCuotas) {
@@ -380,6 +404,20 @@ function detectFinancialIntent(
       enabled: true,
       reason: "cuotas_or_acuerdo",
       matchedKeyword: matchedCuotas,
+    };
+  }
+
+  const matchedProveedores = proveedoresKeywords.find((keyword) =>
+    normalizedMessage.includes(keyword),
+  );
+  const matchedProveedoresScheduling = pagosProveedoresSchedulingKeywords.find((keyword) =>
+    normalizedMessage.includes(keyword),
+  );
+  if (matchedProveedores && matchedProveedoresScheduling) {
+    return {
+      enabled: true,
+      reason: "payments_to_suppliers",
+      matchedKeyword: matchedProveedores,
     };
   }
 
@@ -410,6 +448,23 @@ function detectFinancialIntent(
     };
   }
 
+  const matchedRenta = rentaKeywords.find((keyword) => normalizedMessage.includes(keyword));
+  if (matchedRenta) {
+    return {
+      enabled: true,
+      reason: "renta_focus",
+      matchedKeyword: matchedRenta,
+    };
+  }
+
+  if (matchedProveedores) {
+    return {
+      enabled: true,
+      reason: "payments_to_suppliers",
+      matchedKeyword: matchedProveedores,
+    };
+  }
+
   const matchedKeyword = FINANCIAL_INTENT_KEYWORDS.find((keyword) =>
     normalizedMessage.includes(keyword),
   );
@@ -429,7 +484,11 @@ function detectFinancialIntent(
   };
 }
 
-function selectKbSnippets(normalizedMessage: string, snippets: typeof KB_CFO_SNIPPETS) {
+function selectKbSnippets(
+  normalizedMessage: string,
+  snippets: typeof KB_CFO_SNIPPETS,
+  reason?: string,
+) {
   const snippetsById = new Map(snippets.map((snippet) => [snippet.id, snippet]));
   const prioritizedSnippetIds: string[] = [];
 
@@ -439,6 +498,34 @@ function selectKbSnippets(normalizedMessage: string, snippets: typeof KB_CFO_SNI
       prioritizedSnippetIds.push(snippetId);
     }
   };
+  const mentionsTaxState = includesAny(["iva", "dian", "impuestos", "vencimiento"]);
+
+  if (reason === "payments_to_suppliers") {
+    pushId("domiciliar-pagos");
+    pushId("proveedores-calendario-pagos");
+
+    if (mentionsTaxState) {
+      pushId("priorizacion-vencimientos");
+    }
+  }
+
+  if (reason === "liquidity_pressure") {
+    pushId("triage-caja-orden-pagos");
+
+    if (mentionsTaxState) {
+      pushId("iva-separacion");
+    } else {
+      pushId("priorizacion-vencimientos");
+    }
+  }
+
+  if (reason === "renta_focus") {
+    pushId("renta-provision-mensual");
+
+    if (includesAny(["iva"])) {
+      pushId("iva-separacion");
+    }
+  }
 
   if (
     includesAny([
@@ -459,8 +546,8 @@ function selectKbSnippets(normalizedMessage: string, snippets: typeof KB_CFO_SNI
     pushId("priorizacion-vencimientos");
   }
 
-  if (includesAny(["justo de caja", "liquidez", "flujo", "caja"])) {
-    pushId("flujo-subcuentas");
+  if (reason !== "liquidity_pressure" && includesAny(["justo de caja", "liquidez", "flujo", "caja"])) {
+    pushId("triage-caja-orden-pagos");
     pushId("priorizacion-vencimientos");
   }
 
@@ -970,7 +1057,7 @@ export async function POST(request: NextRequest) {
       const taxIntent = detectTaxIntent(normalizedMessage);
       const financialIntent = detectFinancialIntent(normalizedMessage);
       const selectedKbSnippets = financialIntent.enabled
-        ? selectKbSnippets(normalizedMessage, KB_CFO_SNIPPETS)
+        ? selectKbSnippets(normalizedMessage, KB_CFO_SNIPPETS, financialIntent.reason)
         : [];
       const hardenedKbSnippets = hardenKbSnippets(selectedKbSnippets);
 
@@ -1019,70 +1106,67 @@ export async function POST(request: NextRequest) {
     const userIdMaskedForDebug = maskUserId(authenticatedUserId);
 
     let conversationId = body.conversationId?.trim() || null;
+    let history: StoredMessage[] = [];
 
-    if (conversationId) {
-      let findConversationQuery = supabase
-        .from("conversations")
-        .select("id")
-        .eq("id", conversationId);
-
-      if (allowAnonymousChat) {
-        findConversationQuery = findConversationQuery.is("user_id", null);
-      } else {
-        findConversationQuery = findConversationQuery.eq("user_id", authenticatedUserId);
-      }
-
-      const { data: existingConversation, error: findConversationError } =
-        await findConversationQuery.maybeSingle();
-
-      if (findConversationError) {
-        throw new ApiError(500, "Error consultando la conversacion.");
-      }
-
-      if (!existingConversation) {
-        conversationId = null;
-      }
-    }
-
-    if (!conversationId) {
-      const { data: createdConversation, error: createConversationError } =
-        await supabase
+    if (!allowAnonymousChat) {
+      if (conversationId) {
+        const { data: existingConversation, error: findConversationError } = await supabase
           .from("conversations")
-          .insert({ user_id: allowAnonymousChat ? null : authenticatedUserId })
+          .select("id")
+          .eq("id", conversationId)
+          .eq("user_id", authenticatedUserId)
+          .maybeSingle();
+
+        if (findConversationError) {
+          throw new ApiError(500, "Error consultando la conversacion.");
+        }
+
+        if (!existingConversation) {
+          conversationId = null;
+        }
+      }
+
+      if (!conversationId) {
+        const { data: createdConversation, error: createConversationError } = await supabase
+          .from("conversations")
+          .insert({ user_id: authenticatedUserId })
           .select("id")
           .single();
 
-      if (createConversationError) {
-        throw new ApiError(500, "Error creando la conversacion.");
+        if (createConversationError) {
+          throw new ApiError(500, "Error creando la conversacion.");
+        }
+
+        conversationId = createdConversation.id;
       }
 
-      conversationId = createdConversation.id;
-    }
+      const { data: historyData, error: historyError } = await supabase
+        .from("messages")
+        .select("role, content, created_at")
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: false })
+        .limit(10);
 
-    const { data: historyData, error: historyError } = await supabase
-      .from("messages")
-      .select("role, content, created_at")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: false })
-      .limit(10);
+      if (historyError) {
+        throw new ApiError(500, "Error obteniendo historial de mensajes.");
+      }
 
-    if (historyError) {
-      throw new ApiError(500, "Error obteniendo historial de mensajes.");
-    }
+      history = ((historyData ?? []) as StoredMessage[]).reverse();
 
-    const history = ((historyData ?? []) as StoredMessage[]).reverse();
+      const { error: insertUserMessageError } = await supabase
+        .from("messages")
+        .insert({
+          conversation_id: conversationId,
+          role: "user",
+          content: message,
+          user_id: authenticatedUserId,
+        });
 
-    const { error: insertUserMessageError } = await supabase
-      .from("messages")
-      .insert({
-        conversation_id: conversationId,
-        role: "user",
-        content: message,
-        user_id: allowAnonymousChat ? null : authenticatedUserId,
-      });
-
-    if (insertUserMessageError) {
-      throw new ApiError(500, "Error guardando el mensaje del usuario.");
+      if (insertUserMessageError) {
+        throw new ApiError(500, "Error guardando el mensaje del usuario.");
+      }
+    } else {
+      conversationId = conversationId || crypto.randomUUID();
     }
 
     const contextLines = history.map(
@@ -1099,10 +1183,9 @@ export async function POST(request: NextRequest) {
 
     const taxIntent = detectTaxIntent(message);
     const taxIntentDetected = taxIntent.detected;
-    const taxIntentKeyword = taxIntent.matchedKeyword;
     const financialIntent = detectFinancialIntent(normalizedMessage);
     const selectedKbSnippets = financialIntent.enabled
-      ? selectKbSnippets(normalizedMessage, KB_CFO_SNIPPETS)
+      ? selectKbSnippets(normalizedMessage, KB_CFO_SNIPPETS, financialIntent.reason)
       : [];
     const kbSnippetsForModel = hardenKbSnippets(selectedKbSnippets);
 
@@ -1223,6 +1306,11 @@ export async function POST(request: NextRequest) {
           "Regla 5 (horizonte y calendario): Si horizonte = N días, usar solo Día 1..Día N. Si horizonte = N semanas, usar solo Semana 1..Semana N. No mezclar unidades ni inventar Día/Semana N+1.",
           "Regla 6 (estrategia operativa): Antes de DIAN, proponer 3 acciones concretas de caja: adelantar cobros, diferir pagos no críticos/renegociar plazos, recortar gasto discrecional inmediato. DIAN solo como último recurso.",
           "Regla 7 (estructura de salida): (1) Lo que sé (breve), (2) Cálculo mínimo necesario, (3) Plan operativo accionable, (4) Máximo 1 pregunta final bloqueante y cerrada si es posible.",
+          "Regla 8 (formato obligatorio): Responder SIEMPRE en Markdown usando esta estructura exacta: '## (1) Lo que sé' + bullets, '## (2) Cálculo mínimo necesario', '## (3) Plan operativo accionable', '## (4) Pregunta final'.",
+          "Regla 9 (liquidez explícita): Si el usuario dice 'no tengo caja' o 'reventado de caja', tratarlo como liquidez insuficiente; NO decir que no mencionó caja. Pedir monto exacto solo si hace falta para armar cronograma.",
+          "Regla 10 (nómina): Prohibido sugerir pago parcial de nómina. Si no alcanza caja, sugerir renegociación de fecha + plan de caja + acciones de liquidez.",
+          "Regla 11 (nómina vs IVA): Si preguntan 'nómina o IVA', decidir por vencimiento real: si nómina vence antes, priorizar nómina y crear plan de apartes de IVA; si IVA vence antes, priorizar IVA.",
+          "Regla 12 (Markdown): Mantener siempre saltos de línea y secciones separadas con encabezados '## (1)'...'## (4)'.",
           "Seguridad: Nunca sugerir evasión, ocultamiento de ingresos, facturación falsa ni prácticas ilegales."
         ].join("\n"),
       );
@@ -1338,17 +1426,26 @@ export async function POST(request: NextRequest) {
       throw new ApiError(502, "OpenAI no devolvio texto de respuesta.");
     }
 
-    const { error: insertAssistantMessageError } = await supabase
-      .from("messages")
-      .insert({
-        conversation_id: conversationId,
-        role: "assistant",
-        content: reply,
-        user_id: allowAnonymousChat ? null : authenticatedUserId,
+    if (DEBUG_TAX) {
+      console.info("[api/chat] Assistant message fingerprint", {
+        assistant_message_length: reply.length,
+        assistant_message_hash: hashStringValue(reply),
       });
+    }
 
-    if (insertAssistantMessageError) {
-      throw new ApiError(500, "Error guardando el mensaje del asistente.");
+    if (!allowAnonymousChat) {
+      const { error: insertAssistantMessageError } = await supabase
+        .from("messages")
+        .insert({
+          conversation_id: conversationId,
+          role: "assistant",
+          content: reply,
+          user_id: authenticatedUserId,
+        });
+
+      if (insertAssistantMessageError) {
+        throw new ApiError(500, "Error guardando el mensaje del asistente.");
+      }
     }
 
     logChatRequest({

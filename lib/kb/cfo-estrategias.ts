@@ -53,6 +53,23 @@ export const KB_CFO_SNIPPETS: CfoKbSnippet[] = [
          "Mantén trazabilidad por obligación y periodo.",
    },
    {
+      id: "proveedores-calendario-pagos",
+      keywords: [
+         "proveedores",
+         "facturas",
+         "cuentas por pagar",
+         "programar pagos",
+         "calendario",
+         "vencimiento factura",
+      ],
+      title: "Calendario de pagos a proveedores",
+      content:
+         "Ordena facturas por vencimiento y criticidad de proveedor.\n" +
+         "Agrupa pagos en lotes (batching) en 2 fechas por mes para ordenar caja.\n" +
+         "Evita mora con confirmación de pago y soporte de ejecución.\n" +
+         "Si falta liquidez, renegocia plazos antes del vencimiento.",
+   },
+   {
       id: "priorizacion-vencimientos",
       keywords: [
          "priorizar",
@@ -70,6 +87,41 @@ export const KB_CFO_SNIPPETS: CfoKbSnippet[] = [
          "El IVA se protege primero como obligación tributaria.\n" +
          "Si estás justo, arma cronograma de aportes hasta vencimiento.\n" +
          "Si no alcanzas, evalúa acuerdo formal con DIAN por vía legal.",
+   },
+   {
+      id: "triage-caja-orden-pagos",
+      keywords: [
+         "justo de caja",
+         "reventado",
+         "no tengo caja",
+         "priorizar pagos",
+         "que pago primero",
+         "qué pago primero",
+         "nomina o iva",
+         "nómina o iva",
+      ],
+      title: "Triage de caja: qué pagar primero",
+      content:
+         "Prioriza pagos por vencimiento real y continuidad operativa del negocio.\n" +
+         "Protege nómina y cortes operativos según fecha de vencimiento.\n" +
+         "Ordena impuestos según fecha exigible y planifica apartes cuando no vencen primero.\n" +
+         "Trata proveedores como negociables de forma temprana para evitar mora.\n" +
+         "Nunca recomendar evasión ni prácticas ilegales.",
+   },
+   {
+      id: "renta-provision-mensual",
+      keywords: [
+         "renta",
+         "impuesto de renta",
+         "provision de renta",
+         "provisiono de renta",
+         "provision mensual",
+      ],
+      title: "Provisión mensual de renta",
+      content:
+         "Calcula provisión de renta con base en utilidad estimada y anticipos disponibles.\n" +
+         "Separa una reserva mensual para evitar choque de caja al cierre.\n" +
+         "Si hay variación fuerte de ingresos, ajusta provisión por tramos y revisa semanalmente.",
    },
    {
       id: "flujo-subcuentas",
