@@ -81,6 +81,12 @@ type InvoiceItem = {
   supplier_name: string | null;
   filename: string | null;
   size_bytes: number | null;
+  extracted_at: string | null;
+  extraction_confidence: Record<string, unknown> | null;
+  extraction_raw: {
+    status?: string;
+    [key: string]: unknown;
+  } | null;
 };
 
 type InvoicesResponse = {
@@ -226,6 +232,8 @@ export function ChatClient({
   const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
   const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
   const [isUploadingInvoice, setIsUploadingInvoice] = useState(false);
+  const [processingInvoiceId, setProcessingInvoiceId] = useState<string | null>(null);
+  const [invoiceProcessStatus, setInvoiceProcessStatus] = useState<Record<string, "processed" | "needs_ocr" | "error">>({});
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
@@ -709,6 +717,68 @@ export function ChatClient({
 
     void handleInvoiceUpload(selectedFile);
     event.target.value = "";
+  }
+
+  function getInvoiceDisplayStatus(invoice: InvoiceItem): "processing" | "processed" | "needs_ocr" | "error" | "pending" {
+    if (processingInvoiceId === invoice.id) {
+      return "processing";
+    }
+
+    const localStatus = invoiceProcessStatus[invoice.id];
+    if (localStatus) {
+      return localStatus;
+    }
+
+    const rawStatus = invoice.extraction_raw?.status;
+    if (rawStatus === "needs_ocr") {
+      return "needs_ocr";
+    }
+
+    if (invoice.extracted_at) {
+      return "processed";
+    }
+
+    return "pending";
+  }
+
+  async function handleProcessInvoice(invoiceId: string) {
+    if (demoMode || processingInvoiceId) {
+      return;
+    }
+
+    setProcessingInvoiceId(invoiceId);
+    setInvoicesError(null);
+    setInvoiceUploadMessage(null);
+
+    try {
+      const response = await fetch(`/api/invoices/${invoiceId}/process`, {
+        method: "POST",
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        status?: "processed" | "needs_ocr";
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(data.error || "No se pudo procesar la factura.");
+      }
+
+      const nextStatus = data.status === "needs_ocr" ? "needs_ocr" : "processed";
+      setInvoiceProcessStatus((current) => ({ ...current, [invoiceId]: nextStatus }));
+      setInvoiceUploadMessage(
+        nextStatus === "needs_ocr"
+          ? "Factura escaneada o sin texto. Se requiere OCR (pendiente)."
+          : "Factura procesada correctamente.",
+      );
+      await loadInvoices();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo procesar la factura.";
+      setInvoiceProcessStatus((current) => ({ ...current, [invoiceId]: "error" }));
+      setInvoicesError(message);
+    } finally {
+      setProcessingInvoiceId(null);
+    }
   }
 
   return (
@@ -1339,15 +1409,27 @@ export function ChatClient({
                         <th className="px-3 py-2 text-left font-medium">Estado</th>
                         <th className="px-3 py-2 text-left font-medium">Archivo</th>
                         <th className="px-3 py-2 text-left font-medium">Tamaño</th>
+                        <th className="px-3 py-2 text-left font-medium">Acción</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-100 dark:divide-zinc-900">
                       {invoices.map((invoice) => (
                         <tr key={invoice.id}>
                           <td className="px-3 py-2">{formatDateTime(invoice.created_at)}</td>
-                          <td className="px-3 py-2">{invoice.status}</td>
+                          <td className="px-3 py-2">{getInvoiceDisplayStatus(invoice)}</td>
                           <td className="px-3 py-2">{invoice.filename ?? "—"}</td>
                           <td className="px-3 py-2">{formatFileSize(invoice.size_bytes)}</td>
+                          <td className="px-3 py-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => void handleProcessInvoice(invoice.id)}
+                              disabled={processingInvoiceId === invoice.id}
+                            >
+                              {processingInvoiceId === invoice.id ? "Procesando..." : "Procesar"}
+                            </Button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>

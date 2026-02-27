@@ -8,6 +8,9 @@ type InvoiceRow = {
   status: "pending" | "scheduled" | "paid" | "disputed";
   total_cop: number | null;
   supplier_name: string | null;
+  extracted_at: string | null;
+  extraction_confidence: Record<string, unknown> | null;
+  extraction_raw: Record<string, unknown> | null;
 };
 
 type InvoiceFileRow = {
@@ -35,7 +38,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("invoices")
-    .select("id, created_at, status, total_cop, supplier_name")
+    .select("id, created_at, status, total_cop, supplier_name, extracted_at, extraction_confidence, extraction_raw")
     .eq("user_id", user.id)
     .order("created_at", { ascending: false })
     .limit(50);
@@ -47,7 +50,7 @@ export async function GET() {
   const invoices = (data ?? []) as InvoiceRow[];
   const invoiceIds = invoices.map((invoice) => invoice.id);
 
-  let latestFileByInvoiceId = new Map<string, InvoiceFileRow>();
+  const latestFileByInvoiceId = new Map<string, InvoiceFileRow>();
 
   if (invoiceIds.length > 0) {
     const { data: filesData, error: filesError } = await supabase
