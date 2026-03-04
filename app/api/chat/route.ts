@@ -7,6 +7,7 @@ import { logChatRequest } from "@/lib/logger";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { ventanillaUnicaSystemPrompt } from "@/lib/ai/systemPrompt";
 import { KB_CFO_SNIPPETS } from "@/lib/kb/cfo-estrategias";
+import { getPayablesSummary } from "@/lib/invoices/getPayablesSummary";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { calculateMonthlyProvisionCO } from "@/lib/tax/calculators/colombia/monthlyProvision";
 
@@ -102,6 +103,19 @@ type FinancialContextPayload = {
     | "not_authenticated"
     | "monthly_inputs_query_error";
 };
+
+type InvoicesPrioritySummary = Awaited<ReturnType<typeof getPayablesSummary>>;
+
+type FinancialIntentReason =
+  | "cuotas_or_acuerdo"
+  | "payments_to_suppliers"
+  | "domiciliar_or_transfer"
+  | "liquidity_pressure"
+  | "iva_focus"
+  | "renta_focus"
+  | "invoices_priority"
+  | "keyword_match"
+  | "no_financial_keyword";
 
 type CurrentTaxCalculation =
   | {
@@ -371,7 +385,7 @@ function detectTaxIntent(message: string): { detected: boolean; matchedKeyword: 
 
 function detectFinancialIntent(
   normalizedMessage: string,
-): { enabled: boolean; reason: string; matchedKeyword: string | null } {
+): { enabled: boolean; reason: FinancialIntentReason; matchedKeyword: string | null } {
   const cuotasKeywords = [
     "pagar en cuotas",
     "no pagarlo de golpe",
@@ -397,6 +411,24 @@ function detectFinancialIntent(
     "pagos mensuales",
     "transferencias",
   ];
+  const invoicesPriorityKeywords = [
+    "facturas pendientes",
+    "cuentas por pagar",
+    "cxp",
+    "que pago primero",
+    "vencimientos proveedores",
+  ];
+
+  const matchedInvoicesPriority = invoicesPriorityKeywords.find((keyword) =>
+    normalizedMessage.includes(keyword),
+  );
+  if (matchedInvoicesPriority) {
+    return {
+      enabled: true,
+      reason: "invoices_priority",
+      matchedKeyword: matchedInvoicesPriority,
+    };
+  }
 
   const matchedCuotas = cuotasKeywords.find((keyword) => normalizedMessage.includes(keyword));
   if (matchedCuotas) {
@@ -487,7 +519,7 @@ function detectFinancialIntent(
 function selectKbSnippets(
   normalizedMessage: string,
   snippets: typeof KB_CFO_SNIPPETS,
-  reason?: string,
+  reason?: FinancialIntentReason,
 ) {
   const snippetsById = new Map(snippets.map((snippet) => [snippet.id, snippet]));
   const prioritizedSnippetIds: string[] = [];
@@ -507,6 +539,11 @@ function selectKbSnippets(
     if (mentionsTaxState) {
       pushId("priorizacion-vencimientos");
     }
+  }
+
+  if (reason === "invoices_priority") {
+    pushId("triage-caja-orden-pagos");
+    pushId("proveedores-calendario-pagos");
   }
 
   if (reason === "liquidity_pressure") {
@@ -1191,6 +1228,15 @@ export async function POST(request: NextRequest) {
 
     const kbSnippetIdsUsed = kbSnippetsForModel.map((snippet) => snippet.id);
     let calcActualPayload: CurrentTaxCalculation | null = null;
+    let invoicesPrioritySummary: InvoicesPrioritySummary | null = null;
+
+    if (financialIntent.reason === "invoices_priority" && authenticatedUserId) {
+      invoicesPrioritySummary = await getPayablesSummary({
+        supabase,
+        userId: authenticatedUserId,
+        topLimit: 10,
+      });
+    }
 
     if (taxIntentDetected) {
       if (!authenticatedUserId) {
@@ -1274,6 +1320,40 @@ export async function POST(request: NextRequest) {
           kbCfoText,
           "INSTRUCCION_KB_CFO:",
           "Usa estos snippets solo si aportan respuesta práctica a la pregunta actual.",
+        ].join("\n"),
+      );
+    }
+
+    if (financialIntent.reason === "invoices_priority") {
+      const invoicesPriorityContext = invoicesPrioritySummary ?? {
+        top_limit: 10,
+        unpaid_total: 0,
+        unpaid_count: 0,
+        overdue_count: 0,
+        overdue_total: 0,
+        due_next_7d_total: 0,
+        due_next_30d_total: 0,
+        top_unpaid_invoices: [],
+        note: authenticatedUserId
+          ? "No hay cuentas por pagar pendientes con datos suficientes."
+          : "Usuario no autenticado; no se puede consultar facturas reales.",
+      };
+
+      promptSections.push(
+        [
+          "INVOICES_PRIORITY_CONTEXT:",
+          JSON.stringify(invoicesPriorityContext, null, 2),
+          "INSTRUCCION_INVOICES_PRIORITY:",
+          "Usa este contexto para priorizar pagos a proveedores sin usar datos bancarios.",
+          "Si hay facturas vencidas, priorízalas primero por antigüedad de due_date.",
+          "Si no hay due_date en una factura, trátala como prioridad media y sugiere confirmar vencimiento.",
+          "En (2) menciona explícitamente facturas vencidas y próximos 7/30 días usando overdue_count, overdue_total, due_next_7d_total y due_next_30d_total.",
+          "En (3) propone un orden de pago operativo priorizando primero facturas vencidas y luego próximos 7/30 días.",
+          "Responde SIEMPRE en Markdown con esta estructura exacta:",
+          "## (1) Lo que sé",
+          "## (2) Cálculo mínimo necesario",
+          "## (3) Plan operativo accionable",
+          "## (4) Pregunta final",
         ].join("\n"),
       );
     }

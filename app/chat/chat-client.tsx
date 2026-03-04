@@ -79,6 +79,7 @@ type InvoiceItem = {
   status: "pending" | "scheduled" | "paid" | "disputed";
   total_cop: number | null;
   supplier_name: string | null;
+  due_date?: string | null;
   filename: string | null;
   size_bytes: number | null;
   extracted_at: string | null;
@@ -234,6 +235,7 @@ export function ChatClient({
   const [isUploadingInvoice, setIsUploadingInvoice] = useState(false);
   const [processingInvoiceId, setProcessingInvoiceId] = useState<string | null>(null);
   const [invoiceProcessStatus, setInvoiceProcessStatus] = useState<Record<string, "processed" | "needs_ocr" | "error">>({});
+  const [detailsInvoice, setDetailsInvoice] = useState<InvoiceItem | null>(null);
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
@@ -438,20 +440,104 @@ export function ChatClient({
     }).format(new Date(value));
   }
 
-  function formatFileSize(value: number | null): string {
-    if (value === null || Number.isNaN(value)) {
+  function formatDateOnly(value: string | null | undefined): string {
+    if (!value) {
       return "—";
     }
 
-    if (value < 1024) {
-      return `${value} B`;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return "—";
     }
 
-    if (value < 1024 * 1024) {
-      return `${(value / 1024).toFixed(1)} KB`;
+    return new Intl.DateTimeFormat("es-CO", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(parsed);
+  }
+
+  function getExtractionStatusLabel(status: "processing" | "processed" | "needs_ocr" | "error" | "pending") {
+    if (status === "processing") {
+      return "processing";
     }
 
-    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    if (status === "processed") {
+      return "✓ processed";
+    }
+
+    if (status === "needs_ocr") {
+      return "needs_ocr";
+    }
+
+    if (status === "error") {
+      return "error";
+    }
+
+    return "pending";
+  }
+
+  function getExtractionStatusClasses(status: "processing" | "processed" | "needs_ocr" | "error" | "pending") {
+    if (status === "processed") {
+      return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+    }
+
+    if (status === "processing") {
+      return "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200";
+    }
+
+    if (status === "needs_ocr") {
+      return "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200";
+    }
+
+    if (status === "error") {
+      return "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
+    }
+
+    return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
+  }
+
+  function getInvoiceExtractedField(invoice: InvoiceItem, fieldName: string): unknown {
+    const extractedFields =
+      invoice.extraction_raw && typeof invoice.extraction_raw === "object"
+        ? (invoice.extraction_raw.extracted_fields as Record<string, unknown> | undefined)
+        : undefined;
+
+    return extractedFields?.[fieldName];
+  }
+
+  function getInvoiceConfidence(invoice: InvoiceItem): Record<string, number> {
+    const fromRaw =
+      invoice.extraction_raw && typeof invoice.extraction_raw === "object"
+        ? (invoice.extraction_raw.confidence as Record<string, unknown> | undefined)
+        : undefined;
+
+    const source = fromRaw || invoice.extraction_confidence || {};
+
+    const confidence: Record<string, number> = {};
+
+    for (const [key, value] of Object.entries(source)) {
+      const numeric = typeof value === "number" ? value : Number(value);
+
+      if (Number.isFinite(numeric) && numeric >= 0 && numeric <= 1) {
+        confidence[key] = numeric;
+      }
+    }
+
+    return confidence;
+  }
+
+  function getInvoiceDueDate(invoice: InvoiceItem): string | null {
+    const fromExtraction = getInvoiceExtractedField(invoice, "due_date");
+    if (typeof fromExtraction === "string" && fromExtraction.trim()) {
+      return fromExtraction;
+    }
+
+    if (typeof invoice.due_date === "string" && invoice.due_date.trim()) {
+      return invoice.due_date;
+    }
+
+    return null;
   }
 
   async function handleSignOut() {
@@ -1406,36 +1492,107 @@ export function ChatClient({
                     <thead className="bg-zinc-50 dark:bg-zinc-900">
                       <tr>
                         <th className="px-3 py-2 text-left font-medium">Fecha</th>
-                        <th className="px-3 py-2 text-left font-medium">Estado</th>
                         <th className="px-3 py-2 text-left font-medium">Archivo</th>
-                        <th className="px-3 py-2 text-left font-medium">Tamaño</th>
+                        <th className="px-3 py-2 text-left font-medium">Proveedor</th>
+                        <th className="px-3 py-2 text-left font-medium">Total</th>
+                        <th className="px-3 py-2 text-left font-medium">Vence</th>
+                        <th className="px-3 py-2 text-left font-medium">Estado extracción</th>
                         <th className="px-3 py-2 text-left font-medium">Acción</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-100 dark:divide-zinc-900">
-                      {invoices.map((invoice) => (
-                        <tr key={invoice.id}>
-                          <td className="px-3 py-2">{formatDateTime(invoice.created_at)}</td>
-                          <td className="px-3 py-2">{getInvoiceDisplayStatus(invoice)}</td>
-                          <td className="px-3 py-2">{invoice.filename ?? "—"}</td>
-                          <td className="px-3 py-2">{formatFileSize(invoice.size_bytes)}</td>
-                          <td className="px-3 py-2">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void handleProcessInvoice(invoice.id)}
-                              disabled={processingInvoiceId === invoice.id}
-                            >
-                              {processingInvoiceId === invoice.id ? "Procesando..." : "Procesar"}
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
+                      {invoices.map((invoice) => {
+                        const extractionStatus = getInvoiceDisplayStatus(invoice);
+
+                        return (
+                          <tr key={invoice.id}>
+                            <td className="px-3 py-2">{formatDateTime(invoice.created_at)}</td>
+                            <td className="px-3 py-2">{invoice.filename ?? "—"}</td>
+                            <td className="px-3 py-2">{invoice.supplier_name ?? "—"}</td>
+                            <td className="px-3 py-2">{invoice.total_cop !== null ? formatCop(invoice.total_cop) : "—"}</td>
+                            <td className="px-3 py-2">{formatDateOnly(getInvoiceDueDate(invoice))}</td>
+                            <td className="px-3 py-2">
+                              <div className="flex flex-col gap-1">
+                                <span
+                                  className={`inline-flex w-fit rounded-md border px-2 py-0.5 text-xs font-medium ${getExtractionStatusClasses(extractionStatus)}`}
+                                >
+                                  {getExtractionStatusLabel(extractionStatus)}
+                                </span>
+                                {extractionStatus === "needs_ocr" ? (
+                                  <span className="text-xs text-amber-700 dark:text-amber-300">Requiere OCR (próximo)</span>
+                                ) : null}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => void handleProcessInvoice(invoice.id)}
+                                  disabled={processingInvoiceId === invoice.id}
+                                >
+                                  {processingInvoiceId === invoice.id ? "Procesando..." : "Procesar"}
+                                </Button>
+                                {extractionStatus === "processed" ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setDetailsInvoice(invoice)}
+                                  >
+                                    Ver detalles
+                                  </Button>
+                                ) : null}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
               )}
+
+              {detailsInvoice ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="w-full max-w-2xl rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h4 className="text-sm font-semibold">Detalle de extracción</h4>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setDetailsInvoice(null)}>
+                        Cerrar
+                      </Button>
+                    </div>
+
+                    <div className="space-y-2 text-sm">
+                      <div><span className="font-medium">Proveedor:</span> {String(getInvoiceExtractedField(detailsInvoice, "supplier_name") ?? detailsInvoice.supplier_name ?? "—")}</div>
+                      <div><span className="font-medium">NIT:</span> {String(getInvoiceExtractedField(detailsInvoice, "supplier_tax_id") ?? "—")}</div>
+                      <div><span className="font-medium">Factura #:</span> {String(getInvoiceExtractedField(detailsInvoice, "invoice_number") ?? "—")}</div>
+                      <div><span className="font-medium">Fecha emisión:</span> {String(getInvoiceExtractedField(detailsInvoice, "issue_date") ?? "—")}</div>
+                      <div><span className="font-medium">Vence:</span> {String(getInvoiceExtractedField(detailsInvoice, "due_date") ?? getInvoiceDueDate(detailsInvoice) ?? "—")}</div>
+                      <div><span className="font-medium">Subtotal:</span> {(() => { const v = getInvoiceExtractedField(detailsInvoice, "subtotal_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
+                      <div><span className="font-medium">IVA:</span> {(() => { const v = getInvoiceExtractedField(detailsInvoice, "iva_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
+                      <div><span className="font-medium">Total:</span> {detailsInvoice.total_cop !== null ? formatCop(detailsInvoice.total_cop) : (() => { const v = getInvoiceExtractedField(detailsInvoice, "total_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
+                      <div><span className="font-medium">Moneda:</span> {String(getInvoiceExtractedField(detailsInvoice, "currency") ?? "—")}</div>
+                    </div>
+
+                    <div className="mt-4 rounded-md border border-zinc-200 p-3 text-xs dark:border-zinc-700">
+                      <p className="mb-2 font-semibold">Confidence</p>
+                      <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                        {Object.entries(getInvoiceConfidence(detailsInvoice)).map(([key, value]) => (
+                          <div key={key} className="flex items-center justify-between gap-2">
+                            <span className="text-zinc-500 dark:text-zinc-400">{key}</span>
+                            <span className="font-medium">{value.toFixed(2)}</span>
+                          </div>
+                        ))}
+                        {Object.keys(getInvoiceConfidence(detailsInvoice)).length === 0 ? (
+                          <p className="text-zinc-500 dark:text-zinc-400">Sin confidence disponible.</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </>
           )}
         </SectionCard>
