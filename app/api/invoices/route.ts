@@ -6,6 +6,12 @@ type InvoiceRow = {
   id: string;
   created_at: string;
   status: "pending" | "scheduled" | "paid" | "disputed";
+  payment_status: "unpaid" | "scheduled" | "paid";
+  due_date: string | null;
+  scheduled_payment_date: string | null;
+  paid_at: string | null;
+  payment_method: "transfer" | "pse" | "cash" | "other" | null;
+  payment_notes: string | null;
   total_cop: number | null;
   supplier_name: string | null;
   extracted_at: string | null;
@@ -38,7 +44,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("invoices")
-    .select("id, created_at, status, total_cop, supplier_name, extracted_at, extraction_confidence, extraction_raw")
+    .select("id, created_at, status, payment_status, due_date, scheduled_payment_date, paid_at, payment_method, payment_notes, total_cop, supplier_name, extracted_at, extraction_confidence, extraction_raw")
     .eq("user_id", user.id)
     .order("created_at", { ascending: false })
     .limit(50);

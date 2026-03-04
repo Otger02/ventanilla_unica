@@ -77,9 +77,14 @@ type InvoiceItem = {
   id: string;
   created_at: string;
   status: "pending" | "scheduled" | "paid" | "disputed";
+  payment_status: "unpaid" | "scheduled" | "paid";
   total_cop: number | null;
   supplier_name: string | null;
-  due_date?: string | null;
+  due_date: string | null;
+  scheduled_payment_date: string | null;
+  paid_at: string | null;
+  payment_method: "transfer" | "pse" | "cash" | "other" | null;
+  payment_notes: string | null;
   filename: string | null;
   size_bytes: number | null;
   extracted_at: string | null;
@@ -234,8 +239,13 @@ export function ChatClient({
   const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
   const [isUploadingInvoice, setIsUploadingInvoice] = useState(false);
   const [processingInvoiceId, setProcessingInvoiceId] = useState<string | null>(null);
+  const [updatingPaymentInvoiceId, setUpdatingPaymentInvoiceId] = useState<string | null>(null);
   const [invoiceProcessStatus, setInvoiceProcessStatus] = useState<Record<string, "processed" | "needs_ocr" | "error">>({});
   const [detailsInvoice, setDetailsInvoice] = useState<InvoiceItem | null>(null);
+  const [scheduleInvoice, setScheduleInvoice] = useState<InvoiceItem | null>(null);
+  const [schedulePaymentDate, setSchedulePaymentDate] = useState("");
+  const [schedulePaymentMethod, setSchedulePaymentMethod] = useState<"transfer" | "pse" | "cash" | "other">("transfer");
+  const [schedulePaymentNotes, setSchedulePaymentNotes] = useState("");
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
@@ -492,6 +502,30 @@ export function ChatClient({
 
     if (status === "error") {
       return "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
+    }
+
+    return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
+  }
+
+  function getPaymentStatusLabel(status: "unpaid" | "scheduled" | "paid") {
+    if (status === "paid") {
+      return "paid";
+    }
+
+    if (status === "scheduled") {
+      return "scheduled";
+    }
+
+    return "unpaid";
+  }
+
+  function getPaymentStatusClasses(status: "unpaid" | "scheduled" | "paid") {
+    if (status === "paid") {
+      return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+    }
+
+    if (status === "scheduled") {
+      return "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200";
     }
 
     return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
@@ -865,6 +899,111 @@ export function ChatClient({
     } finally {
       setProcessingInvoiceId(null);
     }
+  }
+
+  function openScheduleModal(invoice: InvoiceItem) {
+    setScheduleInvoice(invoice);
+    setSchedulePaymentDate(invoice.scheduled_payment_date ?? getInvoiceDueDate(invoice) ?? "");
+    setSchedulePaymentMethod(invoice.payment_method ?? "transfer");
+    setSchedulePaymentNotes(invoice.payment_notes ?? "");
+  }
+
+  async function updateInvoicePayment(
+    invoiceId: string,
+    payload: {
+      payment_status: "unpaid" | "scheduled" | "paid";
+      scheduled_payment_date?: string | null;
+      paid_at?: string | null;
+      payment_method?: "transfer" | "pse" | "cash" | "other" | null;
+      payment_notes?: string | null;
+    },
+  ): Promise<boolean> {
+    if (demoMode) {
+      return false;
+    }
+
+    setUpdatingPaymentInvoiceId(invoiceId);
+    setInvoicesError(null);
+    setInvoiceUploadMessage(null);
+
+    try {
+      const response = await fetch(`/api/invoices/${invoiceId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = (await response.json().catch(() => ({}))) as { error?: string };
+
+      if (!response.ok) {
+        throw new Error(data.error || "No se pudo actualizar el pago de la factura.");
+      }
+
+      await loadInvoices();
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo actualizar el pago de la factura.";
+      setInvoicesError(message);
+      return false;
+    } finally {
+      setUpdatingPaymentInvoiceId(null);
+    }
+  }
+
+  async function handleMarkInvoicePaid(invoice: InvoiceItem) {
+    const updated = await updateInvoicePayment(invoice.id, {
+      payment_status: "paid",
+      payment_method: invoice.payment_method,
+      payment_notes: invoice.payment_notes,
+    });
+
+    if (updated) {
+      setInvoiceUploadMessage("Factura marcada como pagada.");
+    }
+  }
+
+  async function handleCancelInvoiceSchedule(invoice: InvoiceItem) {
+    const updated = await updateInvoicePayment(invoice.id, {
+      payment_status: "unpaid",
+      scheduled_payment_date: null,
+      paid_at: null,
+      payment_method: invoice.payment_method,
+      payment_notes: invoice.payment_notes,
+    });
+
+    if (updated) {
+      setInvoiceUploadMessage("Programación cancelada.");
+    }
+  }
+
+  async function handleSaveInvoiceSchedule() {
+    if (!scheduleInvoice) {
+      return;
+    }
+
+    if (!schedulePaymentDate) {
+      setInvoicesError("Debes seleccionar una fecha para programar el pago.");
+      return;
+    }
+
+    const updated = await updateInvoicePayment(scheduleInvoice.id, {
+      payment_status: "scheduled",
+      scheduled_payment_date: schedulePaymentDate,
+      payment_method: schedulePaymentMethod,
+      payment_notes: schedulePaymentNotes || null,
+    });
+
+    if (!updated) {
+      return;
+    }
+
+    setScheduleInvoice(null);
+    setSchedulePaymentDate("");
+    setSchedulePaymentMethod("transfer");
+    setSchedulePaymentNotes("");
+    setInvoiceUploadMessage("Pago programado correctamente.");
   }
 
   return (
@@ -1496,6 +1635,7 @@ export function ChatClient({
                         <th className="px-3 py-2 text-left font-medium">Proveedor</th>
                         <th className="px-3 py-2 text-left font-medium">Total</th>
                         <th className="px-3 py-2 text-left font-medium">Vence</th>
+                        <th className="px-3 py-2 text-left font-medium">Estado pago</th>
                         <th className="px-3 py-2 text-left font-medium">Estado extracción</th>
                         <th className="px-3 py-2 text-left font-medium">Acción</th>
                       </tr>
@@ -1514,6 +1654,20 @@ export function ChatClient({
                             <td className="px-3 py-2">
                               <div className="flex flex-col gap-1">
                                 <span
+                                  className={`inline-flex w-fit rounded-md border px-2 py-0.5 text-xs font-medium ${getPaymentStatusClasses(invoice.payment_status)}`}
+                                >
+                                  {getPaymentStatusLabel(invoice.payment_status)}
+                                </span>
+                                {invoice.payment_status === "scheduled" ? (
+                                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                                    {formatDateOnly(invoice.scheduled_payment_date)}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex flex-col gap-1">
+                                <span
                                   className={`inline-flex w-fit rounded-md border px-2 py-0.5 text-xs font-medium ${getExtractionStatusClasses(extractionStatus)}`}
                                 >
                                   {getExtractionStatusLabel(extractionStatus)}
@@ -1524,16 +1678,45 @@ export function ChatClient({
                               </div>
                             </td>
                             <td className="px-3 py-2">
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <Button
                                   type="button"
                                   variant="outline"
                                   size="sm"
                                   onClick={() => void handleProcessInvoice(invoice.id)}
-                                  disabled={processingInvoiceId === invoice.id}
+                                  disabled={processingInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id}
                                 >
                                   {processingInvoiceId === invoice.id ? "Procesando..." : "Procesar"}
                                 </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => openScheduleModal(invoice)}
+                                  disabled={updatingPaymentInvoiceId === invoice.id}
+                                >
+                                  Programar
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => void handleMarkInvoicePaid(invoice)}
+                                  disabled={updatingPaymentInvoiceId === invoice.id || invoice.payment_status === "paid"}
+                                >
+                                  {updatingPaymentInvoiceId === invoice.id && invoice.payment_status !== "paid" ? "Guardando..." : "Marcar pagada"}
+                                </Button>
+                                {invoice.payment_status === "scheduled" ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => void handleCancelInvoiceSchedule(invoice)}
+                                    disabled={updatingPaymentInvoiceId === invoice.id}
+                                  >
+                                    Cancelar programación
+                                  </Button>
+                                ) : null}
                                 {extractionStatus === "processed" ? (
                                   <Button
                                     type="button"
@@ -1589,6 +1772,87 @@ export function ChatClient({
                           <p className="text-zinc-500 dark:text-zinc-400">Sin confidence disponible.</p>
                         ) : null}
                       </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {scheduleInvoice ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h4 className="text-sm font-semibold">Programar pago</h4>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setScheduleInvoice(null)}
+                        disabled={updatingPaymentInvoiceId === scheduleInvoice.id}
+                      >
+                        Cerrar
+                      </Button>
+                    </div>
+
+                    <div className="space-y-3 text-sm">
+                      <p className="text-zinc-600 dark:text-zinc-300">{scheduleInvoice.filename ?? "Factura"}</p>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium">Fecha</label>
+                        <input
+                          type="date"
+                          value={schedulePaymentDate}
+                          onChange={(event) => setSchedulePaymentDate(event.target.value)}
+                          title="Fecha programada de pago"
+                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium">Método</label>
+                        <select
+                          value={schedulePaymentMethod}
+                          onChange={(event) =>
+                            setSchedulePaymentMethod(event.target.value as "transfer" | "pse" | "cash" | "other")
+                          }
+                          title="Método de pago programado"
+                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        >
+                          <option value="transfer">transfer</option>
+                          <option value="pse">pse</option>
+                          <option value="cash">cash</option>
+                          <option value="other">other</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium">Notas</label>
+                        <textarea
+                          value={schedulePaymentNotes}
+                          onChange={(event) => setSchedulePaymentNotes(event.target.value)}
+                          rows={3}
+                          title="Notas de pago"
+                          placeholder="Notas opcionales"
+                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setScheduleInvoice(null)}
+                        disabled={updatingPaymentInvoiceId === scheduleInvoice.id}
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        onClick={() => void handleSaveInvoiceSchedule()}
+                        disabled={updatingPaymentInvoiceId === scheduleInvoice.id}
+                      >
+                        {updatingPaymentInvoiceId === scheduleInvoice.id ? "Guardando..." : "Guardar"}
+                      </Button>
                     </div>
                   </div>
                 </div>
