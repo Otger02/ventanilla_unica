@@ -17,7 +17,34 @@ type InvoicePatchPayload = {
   paid_at?: string | null;
   payment_method?: PaymentMethod | null;
   payment_notes?: string | null;
+  payment_url?: string | null;
+  supplier_portal_url?: string | null;
+  last_payment_opened_at?: string | null;
 };
+
+function parseOptionalHttpUrl(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+
+  try {
+    const parsed = new URL(trimmed);
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
 
 function parseDateOnlyOrNull(value: unknown): string | null {
   if (value === null || value === undefined || value === "") {
@@ -81,6 +108,9 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
     "paid_at",
     "payment_method",
     "payment_notes",
+    "payment_url",
+    "supplier_portal_url",
+    "last_payment_opened_at",
   ];
 
   const hasInvalidKeys = payloadKeys.some((key) => !allowedKeys.includes(key as keyof InvoicePatchPayload));
@@ -115,9 +145,28 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
         ? rawPayload.payment_notes
         : null;
 
+  const paymentUrl = parseOptionalHttpUrl(rawPayload.payment_url);
+  if (rawPayload.payment_url !== undefined && rawPayload.payment_url !== null && !paymentUrl) {
+    return NextResponse.json({ error: "payment_url inválido. Usa URL http/https." }, { status: 400 });
+  }
+
+  const supplierPortalUrl = parseOptionalHttpUrl(rawPayload.supplier_portal_url);
+  if (rawPayload.supplier_portal_url !== undefined && rawPayload.supplier_portal_url !== null && !supplierPortalUrl) {
+    return NextResponse.json({ error: "supplier_portal_url inválido. Usa URL http/https." }, { status: 400 });
+  }
+
+  const lastPaymentOpenedAt = parseIsoOrNull(rawPayload.last_payment_opened_at);
+  if (
+    rawPayload.last_payment_opened_at !== undefined &&
+    rawPayload.last_payment_opened_at !== null &&
+    !lastPaymentOpenedAt
+  ) {
+    return NextResponse.json({ error: "last_payment_opened_at inválido." }, { status: 400 });
+  }
+
   const { data: currentInvoice, error: currentInvoiceError } = await supabase
     .from("invoices")
-    .select("id, user_id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes")
+    .select("id, user_id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at")
     .eq("id", invoiceId)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -167,12 +216,24 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
     updatePayload.payment_notes = paymentNotes ?? null;
   }
 
+  if (rawPayload.payment_url !== undefined) {
+    updatePayload.payment_url = paymentUrl ?? null;
+  }
+
+  if (rawPayload.supplier_portal_url !== undefined) {
+    updatePayload.supplier_portal_url = supplierPortalUrl ?? null;
+  }
+
+  if (rawPayload.last_payment_opened_at !== undefined) {
+    updatePayload.last_payment_opened_at = lastPaymentOpenedAt ?? null;
+  }
+
   const { data: updatedInvoice, error: updateError } = await supabase
     .from("invoices")
     .update(updatePayload)
     .eq("id", invoiceId)
     .eq("user_id", user.id)
-    .select("id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes")
+    .select("id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at")
     .maybeSingle();
 
   if (updateError) {

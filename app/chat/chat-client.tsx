@@ -85,6 +85,9 @@ type InvoiceItem = {
   paid_at: string | null;
   payment_method: "transfer" | "pse" | "cash" | "other" | null;
   payment_notes: string | null;
+  payment_url: string | null;
+  supplier_portal_url: string | null;
+  last_payment_opened_at: string | null;
   filename: string | null;
   size_bytes: number | null;
   extracted_at: string | null;
@@ -246,6 +249,9 @@ export function ChatClient({
   const [schedulePaymentDate, setSchedulePaymentDate] = useState("");
   const [schedulePaymentMethod, setSchedulePaymentMethod] = useState<"transfer" | "pse" | "cash" | "other">("transfer");
   const [schedulePaymentNotes, setSchedulePaymentNotes] = useState("");
+  const [payLinkInvoice, setPayLinkInvoice] = useState<InvoiceItem | null>(null);
+  const [payLinkPaymentUrl, setPayLinkPaymentUrl] = useState("");
+  const [payLinkSupplierPortalUrl, setPayLinkSupplierPortalUrl] = useState("");
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
@@ -911,11 +917,14 @@ export function ChatClient({
   async function updateInvoicePayment(
     invoiceId: string,
     payload: {
-      payment_status: "unpaid" | "scheduled" | "paid";
+      payment_status?: "unpaid" | "scheduled" | "paid";
       scheduled_payment_date?: string | null;
       paid_at?: string | null;
       payment_method?: "transfer" | "pse" | "cash" | "other" | null;
       payment_notes?: string | null;
+      payment_url?: string | null;
+      supplier_portal_url?: string | null;
+      last_payment_opened_at?: string | null;
     },
   ): Promise<boolean> {
     if (demoMode) {
@@ -1004,6 +1013,71 @@ export function ChatClient({
     setSchedulePaymentMethod("transfer");
     setSchedulePaymentNotes("");
     setInvoiceUploadMessage("Pago programado correctamente.");
+  }
+
+  function openPayLinkModal(invoice: InvoiceItem) {
+    setPayLinkInvoice(invoice);
+    setPayLinkPaymentUrl(invoice.payment_url ?? "");
+    setPayLinkSupplierPortalUrl(invoice.supplier_portal_url ?? "");
+  }
+
+  async function handlePayInvoice(invoice: InvoiceItem) {
+    const targetUrl = invoice.payment_url || invoice.supplier_portal_url;
+
+    if (!targetUrl) {
+      openPayLinkModal(invoice);
+      return;
+    }
+
+    const updated = await updateInvoicePayment(invoice.id, {
+      last_payment_opened_at: new Date().toISOString(),
+    });
+
+    if (!updated) {
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    }
+
+    setInvoiceUploadMessage("Cuando termines, marca como pagada o sube comprobante (próximo).");
+  }
+
+  async function handleSavePayLinksAndOpen() {
+    if (!payLinkInvoice) {
+      return;
+    }
+
+    const nextPaymentUrl = payLinkPaymentUrl.trim();
+    const nextSupplierPortalUrl = payLinkSupplierPortalUrl.trim();
+
+    if (!nextPaymentUrl && !nextSupplierPortalUrl) {
+      setInvoicesError("Debes agregar al menos un link de pago o portal del proveedor.");
+      return;
+    }
+
+    const updated = await updateInvoicePayment(payLinkInvoice.id, {
+      payment_url: nextPaymentUrl || null,
+      supplier_portal_url: nextSupplierPortalUrl || null,
+      last_payment_opened_at: new Date().toISOString(),
+    });
+
+    if (!updated) {
+      return;
+    }
+
+    const targetUrl = nextPaymentUrl || nextSupplierPortalUrl;
+
+    setPayLinkInvoice(null);
+    setPayLinkPaymentUrl("");
+    setPayLinkSupplierPortalUrl("");
+
+    if (typeof window !== "undefined") {
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    }
+
+    setInvoiceUploadMessage("Cuando termines, marca como pagada o sube comprobante (próximo).");
   }
 
   return (
@@ -1683,6 +1757,15 @@ export function ChatClient({
                                   type="button"
                                   variant="outline"
                                   size="sm"
+                                  onClick={() => void handlePayInvoice(invoice)}
+                                  disabled={updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
+                                >
+                                  Pagar
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
                                   onClick={() => void handleProcessInvoice(invoice.id)}
                                   disabled={processingInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id}
                                 >
@@ -1852,6 +1935,72 @@ export function ChatClient({
                         disabled={updatingPaymentInvoiceId === scheduleInvoice.id}
                       >
                         {updatingPaymentInvoiceId === scheduleInvoice.id ? "Guardando..." : "Guardar"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {payLinkInvoice ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h4 className="text-sm font-semibold">Añadir portal/link</h4>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setPayLinkInvoice(null)}
+                        disabled={updatingPaymentInvoiceId === payLinkInvoice.id}
+                      >
+                        Cerrar
+                      </Button>
+                    </div>
+
+                    <div className="space-y-3 text-sm">
+                      <p className="text-zinc-600 dark:text-zinc-300">{payLinkInvoice.filename ?? "Factura"}</p>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium">Link de pago (opcional)</label>
+                        <input
+                          type="url"
+                          value={payLinkPaymentUrl}
+                          onChange={(event) => setPayLinkPaymentUrl(event.target.value)}
+                          title="Link de pago"
+                          placeholder="https://..."
+                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium">Portal del proveedor (opcional)</label>
+                        <input
+                          type="url"
+                          value={payLinkSupplierPortalUrl}
+                          onChange={(event) => setPayLinkSupplierPortalUrl(event.target.value)}
+                          title="Portal del proveedor"
+                          placeholder="https://..."
+                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setPayLinkInvoice(null)}
+                        disabled={updatingPaymentInvoiceId === payLinkInvoice.id}
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        onClick={() => void handleSavePayLinksAndOpen()}
+                        disabled={updatingPaymentInvoiceId === payLinkInvoice.id}
+                      >
+                        {updatingPaymentInvoiceId === payLinkInvoice.id ? "Guardando..." : "Guardar y abrir"}
                       </Button>
                     </div>
                   </div>
