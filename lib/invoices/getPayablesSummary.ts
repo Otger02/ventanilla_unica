@@ -13,13 +13,37 @@ type PayableInvoiceRow = {
   payment_status: "unpaid" | "scheduled" | "paid";
 };
 
+type PayableType = "impuesto" | "servicio";
+
 type TopPayableInvoice = {
   id: string;
   supplier_name: string;
   invoice_number: string | null;
   due_date: string | null;
   total_cop: number;
+  type: PayableType;
 };
+
+function detectPayableType(params: {
+  supplierName: string;
+  invoiceNumber: string | null;
+}): PayableType {
+  const normalized = `${params.supplierName} ${params.invoiceNumber ?? ""}`.toLowerCase();
+
+  const taxKeywords = [
+    "dian",
+    "impuesto",
+    "iva",
+    "retefuente",
+    "retencion",
+    "reteica",
+    "ica",
+    "reteiva",
+  ];
+
+  const matchedTaxKeyword = taxKeywords.some((keyword) => normalized.includes(keyword));
+  return matchedTaxKeyword ? "impuesto" : "servicio";
+}
 
 function parseIsoDate(date: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -59,14 +83,21 @@ export function buildPayablesSummaryFromRows(rows: PayableInvoiceRow[], topLimit
   const normalizedRows = rows.map((row) => {
     const amount = normalizeAmount(row.total_cop);
     const parsedDueDate = typeof row.due_date === "string" ? parseIsoDate(row.due_date) : null;
+    const supplierName = row.supplier_name?.trim() || "Proveedor sin nombre";
+    const invoiceNumber = row.invoice_number?.trim() || null;
+    const payableType = detectPayableType({
+      supplierName,
+      invoiceNumber,
+    });
 
     return {
       id: row.id,
-      supplier_name: row.supplier_name?.trim() || "Proveedor sin nombre",
-      invoice_number: row.invoice_number?.trim() || null,
+      supplier_name: supplierName,
+      invoice_number: invoiceNumber,
       due_date: row.due_date,
       total_cop: amount,
       parsed_due_date: parsedDueDate,
+      type: payableType,
     };
   });
 
@@ -83,14 +114,23 @@ export function buildPayablesSummaryFromRows(rows: PayableInvoiceRow[], topLimit
   );
 
   const topUnpaidInvoices: TopPayableInvoice[] = normalizedRows
-    .map(({ id, supplier_name, invoice_number, due_date, total_cop }) => ({
+    .map(({ id, supplier_name, invoice_number, due_date, total_cop, type }) => ({
       id,
       supplier_name,
       invoice_number,
       due_date,
       total_cop,
+      type,
     }))
     .slice(0, topLimit);
+
+  const impuestoTotal = normalizedRows
+    .filter((row) => row.type === "impuesto")
+    .reduce((sum, row) => sum + row.total_cop, 0);
+
+  const servicioTotal = normalizedRows
+    .filter((row) => row.type === "servicio")
+    .reduce((sum, row) => sum + row.total_cop, 0);
 
   return {
     top_limit: topLimit,
@@ -100,6 +140,10 @@ export function buildPayablesSummaryFromRows(rows: PayableInvoiceRow[], topLimit
     overdue_total: overdueInvoices.reduce((sum, row) => sum + row.total_cop, 0),
     due_next_7d_total: dueNext7Days.reduce((sum, row) => sum + row.total_cop, 0),
     due_next_30d_total: dueNext30Days.reduce((sum, row) => sum + row.total_cop, 0),
+    by_type: {
+      impuesto: impuestoTotal,
+      servicio: servicioTotal,
+    },
     top_unpaid_invoices: topUnpaidInvoices,
   };
 }
@@ -128,6 +172,10 @@ export async function getPayablesSummary(params: {
       overdue_total: 0,
       due_next_7d_total: 0,
       due_next_30d_total: 0,
+      by_type: {
+        impuesto: 0,
+        servicio: 0,
+      },
       top_unpaid_invoices: [] as TopPayableInvoice[],
       note: "No se pudo consultar cuentas por pagar.",
       error_code: "payables_query_error",

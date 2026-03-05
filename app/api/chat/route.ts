@@ -712,6 +712,14 @@ function formatPeriodLabelEs(year: number, month: number): string {
   return `${monthNames[monthIndex]} ${year}`;
 }
 
+function formatCopForPrompt(value: number): string {
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 function getCalcDebugState(
   taxIntentDetected: boolean,
   calcActualPayload: CurrentTaxCalculation | null,
@@ -1236,6 +1244,36 @@ export async function POST(request: NextRequest) {
         userId: authenticatedUserId,
         topLimit: 10,
       });
+
+      if ((invoicesPrioritySummary.top_unpaid_invoices ?? []).length === 0) {
+        const reply = "¡Felicidades! Estás al día con tus obligaciones";
+
+        if (!allowAnonymousChat) {
+          const { error: insertAssistantMessageError } = await supabase.from("messages").insert({
+            conversation_id: conversationId,
+            role: "assistant",
+            content: reply,
+            user_id: authenticatedUserId,
+          });
+
+          if (insertAssistantMessageError) {
+            throw new ApiError(500, "Error guardando el mensaje del asistente.");
+          }
+        }
+
+        logChatRequest({
+          ip: clientIp,
+          userId: userIdForLog,
+          messageLength,
+          model: openAiModel,
+          openAiDurationMs: 0,
+        });
+
+        return NextResponse.json({
+          conversationId,
+          reply,
+        });
+      }
     }
 
     if (taxIntentDetected) {
@@ -1333,22 +1371,43 @@ export async function POST(request: NextRequest) {
         overdue_total: 0,
         due_next_7d_total: 0,
         due_next_30d_total: 0,
+        by_type: {
+          impuesto: 0,
+          servicio: 0,
+        },
         top_unpaid_invoices: [],
         note: authenticatedUserId
           ? "No hay cuentas por pagar pendientes con datos suficientes."
           : "Usuario no autenticado; no se puede consultar facturas reales.",
       };
 
+      const priorityContext = [
+        "ESTRATEGIA_DE_TESORERIA_ACTUAL:",
+        `- Facturas vencidas: ${invoicesPriorityContext.overdue_count} (${formatCopForPrompt(invoicesPriorityContext.overdue_total)})`,
+        `- Total por pagar en próximos 7 días: ${formatCopForPrompt(invoicesPriorityContext.due_next_7d_total)}`,
+        `- Total por pagar en próximos 30 días: ${formatCopForPrompt(invoicesPriorityContext.due_next_30d_total)}`,
+        `- CxP tipo impuesto: ${formatCopForPrompt(invoicesPriorityContext.by_type.impuesto)}`,
+        `- CxP tipo servicio: ${formatCopForPrompt(invoicesPriorityContext.by_type.servicio)}`,
+        "- PRIORIDAD LEGAL SUGERIDA:",
+        "  1. Impuestos DIAN (IVA/Retenciones) por riesgo sancionatorio y penal.",
+        "  2. Servicios críticos para continuidad operativa.",
+        "  3. Proveedores comerciales por antigüedad y cercanía de vencimiento.",
+      ].join("\n");
+
       promptSections.push(
         [
           "INVOICES_PRIORITY_CONTEXT:",
           JSON.stringify(invoicesPriorityContext, null, 2),
+          priorityContext,
           "INSTRUCCION_INVOICES_PRIORITY:",
-          "Usa este contexto para priorizar pagos a proveedores sin usar datos bancarios.",
-          "Si hay facturas vencidas, priorízalas primero por antigüedad de due_date.",
+          "Usa este contexto para priorizar pagos sin usar datos bancarios y respetando prioridad legal en Colombia.",
+          "Regla legal: obligaciones DIAN (IVA/retenciones) tienen prioridad sobre proveedores comerciales.",
+          "Si hay facturas vencidas, priorízalas primero por antigüedad de due_date y luego por tipo (impuesto antes que servicio).",
           "Si no hay due_date en una factura, trátala como prioridad media y sugiere confirmar vencimiento.",
+          "Cada factura incluye campo type: impuesto|servicio; úsalo explícitamente en el orden propuesto.",
           "En (2) menciona explícitamente facturas vencidas y próximos 7/30 días usando overdue_count, overdue_total, due_next_7d_total y due_next_30d_total.",
-          "En (3) propone un orden de pago operativo priorizando primero facturas vencidas y luego próximos 7/30 días.",
+          "En (3) propone un orden de pago operativo priorizando primero impuestos DIAN vencidos, luego servicios críticos, luego demás proveedores.",
+          "Formatea montos SIEMPRE en pesos colombianos (COP), por ejemplo: $1.250.000 COP.",
           "Responde SIEMPRE en Markdown con esta estructura exacta:",
           "## (1) Lo que sé",
           "## (2) Cálculo mínimo necesario",
@@ -1413,6 +1472,11 @@ export async function POST(request: NextRequest) {
           {
             role: "system",
             content: ventanillaUnicaSystemPrompt,
+          },
+          {
+            role: "system",
+            content:
+              "PRIORIDAD_LEGAL_COLOMBIA: En estrategia de tesorería, prioriza deudas DIAN (IVA y retenciones) sobre proveedores comerciales por mayor riesgo legal/sancionatorio. Cuando existan montos, exprésalos en COP con formato colombiano.",
           },
           {
             role: "user",
