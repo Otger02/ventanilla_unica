@@ -88,6 +88,7 @@ type InvoiceItem = {
   payment_url: string | null;
   supplier_portal_url: string | null;
   last_payment_opened_at: string | null;
+  receipts_count: number;
   filename: string | null;
   size_bytes: number | null;
   extracted_at: string | null;
@@ -100,6 +101,16 @@ type InvoiceItem = {
 
 type InvoicesResponse = {
   invoices: InvoiceItem[];
+};
+
+type InvoiceReceiptItem = {
+  id: string;
+  original_filename: string | null;
+  created_at: string;
+};
+
+type InvoiceReceiptsResponse = {
+  receipts: InvoiceReceiptItem[];
 };
 
 const exampleQuestions = [
@@ -252,10 +263,16 @@ export function ChatClient({
   const [payLinkInvoice, setPayLinkInvoice] = useState<InvoiceItem | null>(null);
   const [payLinkPaymentUrl, setPayLinkPaymentUrl] = useState("");
   const [payLinkSupplierPortalUrl, setPayLinkSupplierPortalUrl] = useState("");
+  const [receiptsInvoice, setReceiptsInvoice] = useState<InvoiceItem | null>(null);
+  const [invoiceReceipts, setInvoiceReceipts] = useState<InvoiceReceiptItem[]>([]);
+  const [isLoadingReceipts, setIsLoadingReceipts] = useState(false);
+  const [uploadingReceiptInvoiceId, setUploadingReceiptInvoiceId] = useState<string | null>(null);
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
   const invoiceInputRef = useRef<HTMLInputElement | null>(null);
+  const invoiceReceiptInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingReceiptInvoiceIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -1080,6 +1097,100 @@ export function ChatClient({
     setInvoiceUploadMessage("Cuando termines, marca como pagada o sube comprobante (próximo).");
   }
 
+  function handleReceiptPickerClick(invoiceId: string) {
+    if (demoMode || uploadingReceiptInvoiceId) {
+      return;
+    }
+
+    pendingReceiptInvoiceIdRef.current = invoiceId;
+    invoiceReceiptInputRef.current?.click();
+  }
+
+  async function uploadReceiptForInvoice(invoiceId: string, file: File) {
+    if (demoMode) {
+      return;
+    }
+
+    setUploadingReceiptInvoiceId(invoiceId);
+    setInvoicesError(null);
+    setInvoiceUploadMessage(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`/api/invoices/${invoiceId}/receipts/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        status?: "created" | "duplicate";
+        error?: string;
+      };
+
+      if (!response.ok) {
+        if (response.status === 413) {
+          throw new Error("Comprobante demasiado grande (máximo 15MB).");
+        }
+
+        throw new Error(data.error || "No se pudo subir el comprobante.");
+      }
+
+      if (data.status === "duplicate") {
+        setInvoiceUploadMessage("Comprobante duplicado: ya existe un archivo igual.");
+      } else {
+        setInvoiceUploadMessage("Comprobante subido, marcada como pagada ✓");
+      }
+
+      await loadInvoices();
+
+      if (receiptsInvoice?.id === invoiceId) {
+        await loadInvoiceReceipts(receiptsInvoice);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo subir el comprobante.";
+      setInvoicesError(message);
+    } finally {
+      setUploadingReceiptInvoiceId(null);
+    }
+  }
+
+  function handleReceiptFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0];
+    const invoiceId = pendingReceiptInvoiceIdRef.current;
+
+    if (selectedFile && invoiceId) {
+      void uploadReceiptForInvoice(invoiceId, selectedFile);
+    }
+
+    pendingReceiptInvoiceIdRef.current = null;
+    event.target.value = "";
+  }
+
+  async function loadInvoiceReceipts(invoice: InvoiceItem) {
+    setReceiptsInvoice(invoice);
+    setIsLoadingReceipts(true);
+    setInvoicesError(null);
+
+    try {
+      const response = await fetch(`/api/invoices/${invoice.id}/receipts`, { method: "GET" });
+      const data = (await response.json().catch(() => ({}))) as InvoiceReceiptsResponse & { error?: string };
+
+      if (!response.ok) {
+        throw new Error(data.error || "No se pudieron cargar los comprobantes.");
+      }
+
+      setInvoiceReceipts(data.receipts ?? []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudieron cargar los comprobantes.";
+      setInvoiceReceipts([]);
+      setInvoicesError(message);
+    } finally {
+      setIsLoadingReceipts(false);
+    }
+  }
+
   return (
     <PageShell>
       <div className="flex min-h-screen w-full flex-col gap-4 lg:flex-row">
@@ -1671,6 +1782,16 @@ export function ChatClient({
                   className="hidden"
                   disabled={isUploadingInvoice}
                 />
+                <input
+                  ref={invoiceReceiptInputRef}
+                  id="invoice-receipt-upload-input"
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  onChange={handleReceiptFileChange}
+                  title="Seleccionar comprobante PDF"
+                  className="hidden"
+                  disabled={uploadingReceiptInvoiceId !== null}
+                />
                 <Button
                   type="button"
                   variant="outline"
@@ -1761,6 +1882,24 @@ export function ChatClient({
                                   disabled={updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
                                 >
                                   Pagar
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleReceiptPickerClick(invoice.id)}
+                                  disabled={uploadingReceiptInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
+                                >
+                                  {uploadingReceiptInvoiceId === invoice.id ? "Subiendo..." : "Subir comprobante"}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => void loadInvoiceReceipts(invoice)}
+                                  disabled={uploadingReceiptInvoiceId === invoice.id}
+                                >
+                                  Comprobantes ({invoice.receipts_count})
                                 </Button>
                                 <Button
                                   type="button"
@@ -2003,6 +2142,51 @@ export function ChatClient({
                         {updatingPaymentInvoiceId === payLinkInvoice.id ? "Guardando..." : "Guardar y abrir"}
                       </Button>
                     </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {receiptsInvoice ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="w-full max-w-lg rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h4 className="text-sm font-semibold">Comprobantes</h4>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setReceiptsInvoice(null);
+                          setInvoiceReceipts([]);
+                        }}
+                      >
+                        Cerrar
+                      </Button>
+                    </div>
+
+                    <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+                      {receiptsInvoice.filename ?? "Factura"}
+                    </p>
+
+                    {isLoadingReceipts ? (
+                      <p className="text-sm text-zinc-500 dark:text-zinc-400">Cargando comprobantes...</p>
+                    ) : invoiceReceipts.length === 0 ? (
+                      <p className="text-sm text-zinc-500 dark:text-zinc-400">No hay comprobantes cargados.</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {invoiceReceipts.map((receipt) => (
+                          <li
+                            key={receipt.id}
+                            className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800"
+                          >
+                            <p className="font-medium">{receipt.original_filename ?? "Comprobante PDF"}</p>
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                              {formatDateTime(receipt.created_at)}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </div>
               ) : null}

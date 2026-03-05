@@ -20,6 +20,7 @@ type InvoiceRow = {
   extracted_at: string | null;
   extraction_confidence: Record<string, unknown> | null;
   extraction_raw: Record<string, unknown> | null;
+  receipts_count: number;
 };
 
 type InvoiceFileRow = {
@@ -27,6 +28,10 @@ type InvoiceFileRow = {
   storage_path: string;
   size_bytes: number;
   created_at: string;
+};
+
+type InvoiceReceiptRow = {
+  invoice_id: string;
 };
 
 type InvoiceListItem = InvoiceRow & {
@@ -60,6 +65,7 @@ export async function GET() {
   const invoiceIds = invoices.map((invoice) => invoice.id);
 
   const latestFileByInvoiceId = new Map<string, InvoiceFileRow>();
+  const receiptsCountByInvoiceId = new Map<string, number>();
 
   if (invoiceIds.length > 0) {
     const { data: filesData, error: filesError } = await supabase
@@ -78,6 +84,21 @@ export async function GET() {
         latestFileByInvoiceId.set(fileRow.invoice_id, fileRow);
       }
     }
+
+    const { data: receiptsData, error: receiptsError } = await supabase
+      .from("invoice_receipts")
+      .select("invoice_id")
+      .eq("user_id", user.id)
+      .in("invoice_id", invoiceIds);
+
+    if (receiptsError) {
+      return NextResponse.json({ error: "No se pudo listar comprobantes de facturas." }, { status: 500 });
+    }
+
+    for (const receiptRow of (receiptsData ?? []) as InvoiceReceiptRow[]) {
+      const currentCount = receiptsCountByInvoiceId.get(receiptRow.invoice_id) ?? 0;
+      receiptsCountByInvoiceId.set(receiptRow.invoice_id, currentCount + 1);
+    }
   }
 
   const items: InvoiceListItem[] = invoices.map((invoice) => {
@@ -88,6 +109,7 @@ export async function GET() {
       ...invoice,
       filename,
       size_bytes: file?.size_bytes ?? null,
+      receipts_count: receiptsCountByInvoiceId.get(invoice.id) ?? 0,
     };
   });
 
