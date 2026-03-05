@@ -6,6 +6,7 @@ import { isDemoModeEnabled } from "@/lib/demo-mode";
 import { logChatRequest } from "@/lib/logger";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { ventanillaUnicaSystemPrompt } from "@/lib/ai/systemPrompt";
+import { getGeminiConfig } from "@/lib/ai/gemini";
 import { KB_CFO_SNIPPETS } from "@/lib/kb/cfo-estrategias";
 import { getPayablesSummary } from "@/lib/invoices/getPayablesSummary";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -1116,14 +1117,18 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = await createServerSupabaseClient();
-    const geminiApiKey = process.env.GEMINI_API_KEY;
-    const geminiModel = process.env.GEMINI_MODEL?.trim() || "gemini-1.5-flash";
+    const geminiConfig = getGeminiConfig();
+    const geminiApiKey = geminiConfig.apiKey;
+    const geminiModel = geminiConfig.model;
     const demoMode = isDemoModeEnabled();
     const allowAnonymousChat = demoMode;
     const messageLength = message.length;
 
-    if (!geminiApiKey) {
-      throw new ApiError(500, "Missing GEMINI_API_KEY");
+    if (!geminiConfig.hasApiKey) {
+      throw new ApiError(
+        500,
+        "Missing Gemini API key. Define GEMINI_API_KEY in .env.local and restart the server.",
+      );
     }
 
     const genAI = new GoogleGenerativeAI(geminiApiKey);

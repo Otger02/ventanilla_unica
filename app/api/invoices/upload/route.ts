@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { NextResponse } from "next/server";
 
+import { getGeminiConfig } from "@/lib/ai/gemini";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 function sanitizeFileName(name: string) {
@@ -110,17 +111,17 @@ async function extractInvoiceWithGemini(params: {
   fileBuffer: Buffer;
   mimeType: string;
 }) {
-  const geminiApiKey = process.env.GEMINI_API_KEY;
-  if (!geminiApiKey || geminiApiKey.trim().length === 0) {
+  const geminiConfig = getGeminiConfig();
+  if (!geminiConfig.hasApiKey) {
     return {
-      error: "Configuración incompleta: GEMINI_API_KEY no está definida.",
+      error: "Configuración incompleta: falta Gemini API key (GEMINI_API_KEY).",
       code: "config_missing_gemini_api_key",
     } as const;
   }
 
-  const genAI = new GoogleGenerativeAI(geminiApiKey);
+  const genAI = new GoogleGenerativeAI(geminiConfig.apiKey);
   const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-flash",
+    model: geminiConfig.model,
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
