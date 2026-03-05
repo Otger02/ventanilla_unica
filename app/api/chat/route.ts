@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import { DEBUG_TAX, MAX_MESSAGE_LENGTH } from "@/lib/config";
 import { isDemoModeEnabled } from "@/lib/demo-mode";
@@ -230,7 +230,7 @@ class ApiError extends Error {
   }
 }
 
-type OpenAiErrorLike = {
+type AiProviderErrorLike = {
   name?: string;
   message?: string;
   status?: number;
@@ -241,7 +241,7 @@ type OpenAiErrorLike = {
   };
 };
 
-function isTimeoutError(error: OpenAiErrorLike): boolean {
+function isTimeoutError(error: AiProviderErrorLike): boolean {
   const name = error.name?.toLowerCase() ?? "";
   const message = error.message?.toLowerCase() ?? "";
   const status = error.status;
@@ -254,7 +254,7 @@ function isTimeoutError(error: OpenAiErrorLike): boolean {
   );
 }
 
-function isModelNotFoundError(error: OpenAiErrorLike): boolean {
+function isModelNotFoundError(error: AiProviderErrorLike): boolean {
   const status = error.status;
   const message = error.message?.toLowerCase() ?? "";
   const code = error.code ?? error.error?.code;
@@ -1116,17 +1116,17 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = await createServerSupabaseClient();
-    const openAiApiKey = process.env.OPENAI_API_KEY;
-    const openAiModel = process.env.OPENAI_MODEL?.trim() || "gpt-5";
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    const geminiModel = process.env.GEMINI_MODEL?.trim() || "gemini-1.5-flash";
     const demoMode = isDemoModeEnabled();
     const allowAnonymousChat = demoMode;
     const messageLength = message.length;
 
-    if (!openAiApiKey) {
-      throw new ApiError(500, "Missing OPENAI_API_KEY");
+    if (!geminiApiKey) {
+      throw new ApiError(500, "Missing GEMINI_API_KEY");
     }
 
-    const openai = new OpenAI({ apiKey: openAiApiKey });
+    const genAI = new GoogleGenerativeAI(geminiApiKey);
 
     let authenticatedUserId: string | null = null;
 
@@ -1217,7 +1217,6 @@ export async function POST(request: NextRequest) {
     const contextLines = history.map(
       (item) => `${item.role === "assistant" ? "Asistente" : "Usuario"}: ${item.content}`,
     );
-    contextLines.push(`Usuario: ${message}`);
 
     const normalizedMessage = normalizeForIntent(message);
 
@@ -1265,7 +1264,7 @@ export async function POST(request: NextRequest) {
           ip: clientIp,
           userId: userIdForLog,
           messageLength,
-          model: openAiModel,
+          model: geminiModel,
           openAiDurationMs: 0,
         });
 
@@ -1307,7 +1306,7 @@ export async function POST(request: NextRequest) {
         kbSnippetIdsUsed,
         calcStatus,
         errorCode,
-        model: openAiModel,
+        model: geminiModel,
         openai_duration_ms: null,
         user_id: userIdMaskedForDebug,
       });
@@ -1455,40 +1454,40 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const fullPrompt = [
+      ventanillaUnicaSystemPrompt,
+      "PRIORIDAD_LEGAL_COLOMBIA: En estrategia de tesorería, prioriza deudas DIAN (IVA y retenciones) sobre proveedores comerciales por mayor riesgo legal/sancionatorio. Cuando existan montos, exprésalos en COP con formato colombiano.",
+      promptSections.join("\n\n"),
+    ].join("\n\n");
+
+    const geminiHistory = history.map((item) => ({
+      role: item.role === "assistant" ? "model" : "user",
+      parts: [{ text: item.content }],
+    }));
+
     let reply = "";
     let openAiDurationMs = 0;
     const openAiStart = Date.now();
-    const hasOpenAiApiKey = Boolean(openAiApiKey);
+    const hasGeminiApiKey = Boolean(geminiApiKey);
 
-    console.info("[api/chat] OpenAI request started", {
-      model: openAiModel,
-      hasOpenAiApiKey,
+    console.info("[api/chat] Gemini request started", {
+      model: geminiModel,
+      hasGeminiApiKey,
     });
 
     try {
-      const aiResponse = await openai.responses.create({
-        model: openAiModel,
-        input: [
-          {
-            role: "system",
-            content: ventanillaUnicaSystemPrompt,
-          },
-          {
-            role: "system",
-            content:
-              "PRIORIDAD_LEGAL_COLOMBIA: En estrategia de tesorería, prioriza deudas DIAN (IVA y retenciones) sobre proveedores comerciales por mayor riesgo legal/sancionatorio. Cuando existan montos, exprésalos en COP con formato colombiano.",
-          },
-          {
-            role: "user",
-            content: promptSections.join("\n\n"),
-          },
-        ],
+      const model = genAI.getGenerativeModel({
+        model: geminiModel,
+        systemInstruction: fullPrompt,
       });
+
+      const chat = model.startChat({ history: geminiHistory });
+      const result = await chat.sendMessage(message);
       openAiDurationMs = Date.now() - openAiStart;
 
-      console.info("[api/chat] OpenAI request completed", {
-        model: openAiModel,
-        hasOpenAiApiKey,
+      console.info("[api/chat] Gemini request completed", {
+        model: geminiModel,
+        hasGeminiApiKey,
         openAiDurationMs,
       });
 
@@ -1503,26 +1502,26 @@ export async function POST(request: NextRequest) {
           kbSnippetIdsUsed,
           calcStatus,
           errorCode,
-          model: openAiModel,
+          model: geminiModel,
           openai_duration_ms: openAiDurationMs,
           user_id: userIdMaskedForDebug,
         });
       }
 
-      reply = aiResponse.output_text?.trim() ?? "";
+      reply = result.response.text()?.trim() ?? "";
     } catch (error) {
       openAiDurationMs = Date.now() - openAiStart;
 
-      const openAiError = error as OpenAiErrorLike;
+      const aiProviderError = error as AiProviderErrorLike;
       const errorStatus =
-        typeof openAiError.status === "number" ? openAiError.status : undefined;
+        typeof aiProviderError.status === "number" ? aiProviderError.status : undefined;
 
-      console.error("[api/chat] OpenAI request failed", {
-        model: openAiModel,
-        hasOpenAiApiKey,
+      console.error("[api/chat] Gemini request failed", {
+        model: geminiModel,
+        hasGeminiApiKey,
         openAiDurationMs,
-        errorName: openAiError.name,
-        errorMessage: openAiError.message,
+        errorName: aiProviderError.name,
+        errorMessage: aiProviderError.message,
         errorStatus,
       });
 
@@ -1537,7 +1536,7 @@ export async function POST(request: NextRequest) {
           kbSnippetIdsUsed,
           calcStatus,
           errorCode,
-          model: openAiModel,
+          model: geminiModel,
           openai_duration_ms: openAiDurationMs,
           user_id: userIdMaskedForDebug,
         });
@@ -1547,27 +1546,27 @@ export async function POST(request: NextRequest) {
         ip: clientIp,
         userId: userIdForLog,
         messageLength,
-        model: openAiModel,
+        model: geminiModel,
         openAiDurationMs,
       });
 
-      if (isTimeoutError(openAiError)) {
-        throw new ApiError(504, "OpenAI timeout");
+      if (isTimeoutError(aiProviderError)) {
+        throw new ApiError(504, "Gemini timeout");
       }
 
       if (errorStatus === 401 || errorStatus === 403) {
-        throw new ApiError(502, "OpenAI auth error");
+        throw new ApiError(502, "Gemini auth error");
       }
 
-      if (isModelNotFoundError(openAiError)) {
-        throw new ApiError(502, `Model not found: ${openAiModel}`);
+      if (isModelNotFoundError(aiProviderError)) {
+        throw new ApiError(502, `Model not found: ${geminiModel}`);
       }
 
-      throw new ApiError(502, "Error generando respuesta con OpenAI.");
+      throw new ApiError(502, "Error generando respuesta con Gemini.");
     }
 
     if (!reply) {
-      throw new ApiError(502, "OpenAI no devolvio texto de respuesta.");
+      throw new ApiError(502, "Gemini no devolvio texto de respuesta.");
     }
 
     if (DEBUG_TAX) {
@@ -1596,7 +1595,7 @@ export async function POST(request: NextRequest) {
       ip: clientIp,
       userId: userIdForLog,
       messageLength,
-      model: openAiModel,
+      model: geminiModel,
       openAiDurationMs,
     });
 

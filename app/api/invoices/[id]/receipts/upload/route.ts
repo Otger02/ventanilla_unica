@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextResponse } from "next/server";
 
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -13,6 +14,22 @@ type UploadReceiptContext = {
 
 const MAX_RECEIPT_SIZE_BYTES = 15 * 1024 * 1024;
 
+const SUPPORTED_RECEIPT_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
+const SUPPORTED_RECEIPT_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".webp"];
+
+type AuditResult = {
+  match: boolean;
+  confidence: number;
+  reason: string;
+  detected_amount: number | null;
+};
+
 function sanitizeFileName(name: string) {
   return name
     .toLowerCase()
@@ -21,8 +38,135 @@ function sanitizeFileName(name: string) {
     .replace(/^-|-$/g, "");
 }
 
-function hasPdfExtension(fileName: string) {
-  return fileName.toLowerCase().endsWith(".pdf");
+function hasSupportedExtension(fileName: string) {
+  const normalized = fileName.toLowerCase();
+  return SUPPORTED_RECEIPT_EXTENSIONS.some((extension) => normalized.endsWith(extension));
+}
+
+function parseAuditJson(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  const candidates = [trimmed];
+
+  const codeFenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (codeFenceMatch?.[1]) {
+    candidates.push(codeFenceMatch[1].trim());
+  }
+
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function parseAuditResult(raw: string): AuditResult | null {
+  const parsed = parseAuditJson(raw);
+  if (!parsed) {
+    return null;
+  }
+
+  const confidenceRaw = parsed.confidence;
+  const confidence = typeof confidenceRaw === "number" ? confidenceRaw : Number(confidenceRaw);
+  const detectedAmountRaw = parsed.detected_amount;
+  const detectedAmount =
+    detectedAmountRaw === null || detectedAmountRaw === undefined
+      ? null
+      : typeof detectedAmountRaw === "number"
+        ? detectedAmountRaw
+        : Number(detectedAmountRaw);
+
+  return {
+    match: Boolean(parsed.match),
+    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
+    reason: typeof parsed.reason === "string" ? parsed.reason.trim() : "Sin razón provista por auditor IA.",
+    detected_amount: Number.isFinite(detectedAmount ?? NaN) ? Math.round(detectedAmount as number) : null,
+  };
+}
+
+async function auditReceiptWithGemini(params: {
+  fileBuffer: Buffer;
+  mimeType: string;
+  expectedSupplierName: string | null;
+  expectedInvoiceNumber: string | null;
+  expectedTotalCop: number | null;
+  expectedDueDate: string | null;
+}) {
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+
+  if (!geminiApiKey || geminiApiKey.trim().length === 0) {
+    return {
+      error: "Configuración incompleta: GEMINI_API_KEY no está definida.",
+      code: "config_missing_gemini_api_key",
+    } as const;
+  }
+
+  const genAI = new GoogleGenerativeAI(geminiApiKey);
+  const model = genAI.getGenerativeModel({
+    model: "gemini-1.5-flash",
+    generationConfig: {
+      responseMimeType: "application/json",
+    },
+  });
+
+  const prompt = [
+    "Eres un auditor de comprobantes de pago en Colombia.",
+    "Compara esta evidencia con los datos esperados de la factura y decide si corresponde.",
+    "Tolera diferencias menores de nombre (abreviaciones), pero se estricto con montos.",
+    "Si no es un comprobante de pago real o no hay evidencia suficiente, match debe ser false.",
+    "Responde SOLO JSON con este esquema:",
+    '{"match": boolean, "confidence": number, "reason": string, "detected_amount": number}',
+    "Datos esperados:",
+    `- Proveedor: ${params.expectedSupplierName ?? "No disponible"}`,
+    `- Factura: ${params.expectedInvoiceNumber ?? "No disponible"}`,
+    `- Monto exacto COP: ${params.expectedTotalCop ?? "No disponible"}`,
+    `- Fecha límite: ${params.expectedDueDate ?? "No disponible"}`,
+  ].join("\n");
+
+  try {
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          data: params.fileBuffer.toString("base64"),
+          mimeType: params.mimeType,
+        },
+      },
+      {
+        text: prompt,
+      },
+    ]);
+
+    const raw = result.response.text();
+    const parsed = parseAuditResult(raw);
+
+    if (!parsed) {
+      return {
+        error: "Gemini devolvió una respuesta inválida para auditoría.",
+        code: "gemini_invalid_json_response",
+      } as const;
+    }
+
+    return {
+      audit: parsed,
+    } as const;
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : "Error auditando comprobante con Gemini.",
+      code: "gemini_audit_error",
+    } as const;
+  }
 }
 
 export async function POST(request: Request, context: UploadReceiptContext) {
@@ -44,7 +188,7 @@ export async function POST(request: Request, context: UploadReceiptContext) {
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
-    .select("id, user_id, payment_status, paid_at")
+    .select("id, user_id, payment_status, paid_at, total_cop, supplier_name, invoice_number, due_date")
     .eq("id", invoiceId)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -68,12 +212,41 @@ export async function POST(request: Request, context: UploadReceiptContext) {
     return NextResponse.json({ error: "Archivo demasiado grande (máximo 15MB)." }, { status: 413 });
   }
 
-  if (file.type !== "application/pdf" || !hasPdfExtension(file.name)) {
-    return NextResponse.json({ error: "Solo se permiten archivos PDF (.pdf)." }, { status: 400 });
+  if (!SUPPORTED_RECEIPT_MIME_TYPES.has(file.type) || !hasSupportedExtension(file.name)) {
+    return NextResponse.json({ error: "Solo se permiten PDF o imágenes JPG/PNG/WEBP." }, { status: 400 });
   }
 
   const fileBuffer = Buffer.from(await file.arrayBuffer());
   const sha256 = createHash("sha256").update(fileBuffer).digest("hex");
+
+  const auditResult = await auditReceiptWithGemini({
+    fileBuffer,
+    mimeType: file.type,
+    expectedSupplierName: invoice.supplier_name,
+    expectedInvoiceNumber: invoice.invoice_number,
+    expectedTotalCop: invoice.total_cop,
+    expectedDueDate: invoice.due_date,
+  });
+
+  if ("error" in auditResult) {
+    return NextResponse.json(
+      {
+        error: auditResult.error,
+        code: auditResult.code,
+      },
+      { status: 502 },
+    );
+  }
+
+  if (!auditResult.audit.match) {
+    return NextResponse.json(
+      {
+        error: `Validación fallida: ${auditResult.audit.reason}`,
+        audit: auditResult.audit,
+      },
+      { status: 400 },
+    );
+  }
 
   const { data: duplicateReceipt, error: duplicateLookupError } = await supabase
     .from("invoice_receipts")
@@ -140,5 +313,6 @@ export async function POST(request: Request, context: UploadReceiptContext) {
     status: "created",
     receipt_id: insertedReceipt.id,
     invoice_id: invoiceId,
+    audit: auditResult.audit,
   });
 }
