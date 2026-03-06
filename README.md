@@ -22,16 +22,16 @@ SUPABASE_URL=tu_supabase_url
 SUPABASE_ANON_KEY=tu_supabase_anon_key
 NEXT_PUBLIC_SUPABASE_URL=tu_supabase_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=tu_supabase_anon_key
-OPENAI_API_KEY=tu_openai_api_key
-OPENAI_MODEL=gpt-5
+GEMINI_API_KEY=tu_gemini_api_key
+GEMINI_MODEL=gemini-1.5-flash
 DEMO_MODE=false
 DEBUG_TAX=false
 WIX_EMBED_ORIGIN=
 ```
 
 Modelos de ejemplo:
-- OPENAI_MODEL=gpt-5
-- OPENAI_MODEL=gpt-4.1-mini (ejemplo barato)
+- GEMINI_MODEL=gemini-1.5-flash
+- GEMINI_MODEL=gemini-2.0-flash (ejemplo barato)
 
 4. En Supabase Authentication > URL Configuration, agrega tu URL de callback:
   - Desarrollo: `http://localhost:3000/auth/callback`
@@ -164,13 +164,13 @@ Respuesta:
 ```json
 {
   "conversationId": "uuid",
-  "reply": "respuesta generada por OpenAI"
+  "reply": "respuesta generada por Gemini"
 }
 ```
 
 Notas:
-- El endpoint usa OpenAI con un system prompt fijo para Ventanilla Única.
-- El modelo se configura con OPENAI_MODEL (si no existe, usa gpt-5).
+- El endpoint usa Gemini con un system prompt fijo para Ventanilla Única.
+- El modelo se configura con GEMINI_MODEL (si no existe, usa gemini-1.5-flash).
 - Longitud maxima de mensaje: 2000 caracteres (`MAX_MESSAGE_LENGTH`).
 - Si se supera, responde `400` con `{ "error": "Message too long" }`.
 - Antes de generar respuesta, incluye los últimos 10 mensajes de la conversación como contexto.

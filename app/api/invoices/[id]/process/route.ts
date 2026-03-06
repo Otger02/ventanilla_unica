@@ -1,8 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
 import { PDFParse } from "pdf-parse";
 
 import { logInvoiceProcessDebug } from "@/lib/logger";
@@ -242,60 +242,86 @@ export async function POST(_request: Request, context: ProcessRouteContext) {
     return NextResponse.json({ status: "needs_ocr" });
   }
 
-  const openAiApiKey = process.env.OPENAI_API_KEY;
-  const openAiModel =
-    process.env.OPENAI_MODEL_INVOICE?.trim() || process.env.OPENAI_MODEL?.trim() || "gpt-5";
+  const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const geminiModel =
+    process.env.GEMINI_MODEL_INVOICE?.trim() || process.env.GEMINI_MODEL?.trim() || "gemini-1.5-flash";
 
-  if (!openAiApiKey || openAiApiKey.trim().length === 0) {
+  if (!geminiApiKey || geminiApiKey.trim().length === 0) {
     return NextResponse.json(
       {
-        error: "Configuración incompleta: OPENAI_API_KEY no está definida.",
-        code: "config_missing_openai_api_key",
+        error: "Configuracion incompleta: GEMINI_API_KEY/GOOGLE_API_KEY no esta definida.",
+        code: "config_missing_gemini_api_key",
       },
       { status: 500 },
     );
   }
 
-  const openai = new OpenAI({ apiKey: openAiApiKey });
+  const genAI = new GoogleGenerativeAI(geminiApiKey);
+  const model = genAI.getGenerativeModel({
+    model: geminiModel,
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: SchemaType.OBJECT,
+        properties: {
+          supplier_name: { type: SchemaType.STRING },
+          supplier_tax_id: { type: SchemaType.STRING },
+          invoice_number: { type: SchemaType.STRING },
+          issue_date: { type: SchemaType.STRING },
+          due_date: { type: SchemaType.STRING },
+          subtotal_cop: { type: SchemaType.NUMBER },
+          iva_cop: { type: SchemaType.NUMBER },
+          total_cop: { type: SchemaType.NUMBER },
+          currency: { type: SchemaType.STRING },
+          confidence: {
+            type: SchemaType.OBJECT,
+            properties: {
+              supplier_name: { type: SchemaType.NUMBER },
+              supplier_tax_id: { type: SchemaType.NUMBER },
+              invoice_number: { type: SchemaType.NUMBER },
+              issue_date: { type: SchemaType.NUMBER },
+              due_date: { type: SchemaType.NUMBER },
+              subtotal_cop: { type: SchemaType.NUMBER },
+              iva_cop: { type: SchemaType.NUMBER },
+              total_cop: { type: SchemaType.NUMBER },
+              currency: { type: SchemaType.NUMBER },
+            },
+          },
+        },
+      },
+    },
+  });
 
-  let aiResponse: Awaited<ReturnType<typeof openai.responses.create>>;
+  let rawOutputText = "";
 
   try {
-    aiResponse = await openai.responses.create({
-      model: openAiModel,
-      input: [
-        {
-          role: "system",
-          content:
-            "Extrae datos de factura electrónica de Colombia y devuelve SOLO JSON válido, sin markdown ni texto adicional.",
-        },
-        {
-          role: "user",
-          content: [
-            "Extrae estos campos y devuelve null si no están:",
-            "supplier_name, supplier_tax_id, invoice_number, issue_date(YYYY-MM-DD), due_date(YYYY-MM-DD), subtotal_cop, iva_cop, total_cop, currency",
-            "Incluye confidence por campo (0 a 1) en objeto confidence con las mismas keys.",
-            "Reglas de extracción:",
-            "1) supplier_name y supplier_tax_id deben corresponder al EMISOR de la factura (no al cliente/comprador).",
-            "2) supplier_tax_id debe ser NIT del emisor; limpiar espacios y mantener dígito de verificación si existe.",
-            "3) invoice_number debe ser el número de factura (FE/FV/FACTURA No.), no CUFE, no referencia de pago, no orden de compra.",
-            "4) Montos en COP enteros sin separadores.",
-            "5) Verifica consistencia: total_cop ≈ subtotal_cop + iva_cop. Si hay múltiples candidatos, prioriza el trío que cuadre.",
-            "6) Si el IVA es 0 explícito, puede ser válido.",
-            "7) Si no estás seguro, devuelve null en ese campo y baja confidence.",
-            "Formato exacto:",
-            "{\n  \"supplier_name\": null,\n  \"supplier_tax_id\": null,\n  \"invoice_number\": null,\n  \"issue_date\": null,\n  \"due_date\": null,\n  \"subtotal_cop\": null,\n  \"iva_cop\": null,\n  \"total_cop\": null,\n  \"currency\": null,\n  \"confidence\": {\n    \"supplier_name\": 0,\n    \"supplier_tax_id\": 0,\n    \"invoice_number\": 0,\n    \"issue_date\": 0,\n    \"due_date\": 0,\n    \"subtotal_cop\": 0,\n    \"iva_cop\": 0,\n    \"total_cop\": 0,\n    \"currency\": 0\n  }\n}",
-            "Texto del PDF:",
-            extractedText.slice(0, 24000),
-          ].join("\n\n"),
-        },
-      ],
-    });
+    const aiResponse = await model.generateContent([
+      {
+        text: [
+          "Extrae datos de factura electronica de Colombia y devuelve SOLO JSON valido, sin markdown ni texto adicional.",
+          "Extrae estos campos y devuelve null si no estan:",
+          "supplier_name, supplier_tax_id, invoice_number, issue_date(YYYY-MM-DD), due_date(YYYY-MM-DD), subtotal_cop, iva_cop, total_cop, currency",
+          "Incluye confidence por campo (0 a 1) en objeto confidence con las mismas keys.",
+          "Reglas de extraccion:",
+          "1) supplier_name y supplier_tax_id deben corresponder al EMISOR de la factura (no al cliente/comprador).",
+          "2) supplier_tax_id debe ser NIT del emisor; limpiar espacios y mantener digito de verificacion si existe.",
+          "3) invoice_number debe ser el numero de factura (FE/FV/FACTURA No.), no CUFE, no referencia de pago, no orden de compra.",
+          "4) Montos en COP enteros sin separadores.",
+          "5) Verifica consistencia: total_cop ~= subtotal_cop + iva_cop. Si hay multiples candidatos, prioriza el trio que cuadre.",
+          "6) Si el IVA es 0 explicito, puede ser valido.",
+          "7) Si no estas seguro, devuelve null en ese campo y baja confidence.",
+          "Formato exacto:",
+          "{\n  \"supplier_name\": null,\n  \"supplier_tax_id\": null,\n  \"invoice_number\": null,\n  \"issue_date\": null,\n  \"due_date\": null,\n  \"subtotal_cop\": null,\n  \"iva_cop\": null,\n  \"total_cop\": null,\n  \"currency\": null,\n  \"confidence\": {\n    \"supplier_name\": 0,\n    \"supplier_tax_id\": 0,\n    \"invoice_number\": 0,\n    \"issue_date\": 0,\n    \"due_date\": 0,\n    \"subtotal_cop\": 0,\n    \"iva_cop\": 0,\n    \"total_cop\": 0,\n    \"currency\": 0\n  }\n}",
+          "Texto del PDF:",
+          extractedText.slice(0, 24000),
+        ].join("\n\n"),
+      },
+    ]);
+    rawOutputText = aiResponse.response.text().trim();
   } catch {
-    return NextResponse.json({ error: "No se pudo ejecutar la extracción con IA." }, { status: 502 });
+    return NextResponse.json({ error: "No se pudo ejecutar la extraccion con IA." }, { status: 502 });
   }
 
-  const rawOutputText = aiResponse.output_text?.trim() ?? "";
   const parsedJson = parseJsonObject(rawOutputText);
 
   if (!parsedJson) {
@@ -366,7 +392,7 @@ export async function POST(_request: Request, context: ProcessRouteContext) {
 
   const extractionRaw = {
     status: "processed",
-    model: openAiModel,
+    model: geminiModel,
     source: "pdf_text",
     extracted_text_length: extractedText.length,
     extracted_text_sha256: createHash("sha256").update(extractedText).digest("hex"),
