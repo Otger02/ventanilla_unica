@@ -51,7 +51,7 @@ export async function POST(request: Request) {
     console.log("🤖 Enviando a Gemini Flash...");
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      model: process.env.GEMINI_MODEL || "gemini-1.5-flash-001",
+      model: process.env.GEMINI_MODEL || "gemini-1.5-flash-latest",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
