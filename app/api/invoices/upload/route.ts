@@ -93,7 +93,7 @@ export async function POST(request: Request) {
         total_cop: totalCopFinal,
         due_date: extracted.due_date,
         supplier_tax_id: extracted.supplier_nit,
-        status: "unpaid",
+        status: "pending",
         updated_at: new Date().toISOString()
       })
       .select()
