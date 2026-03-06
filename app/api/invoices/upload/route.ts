@@ -47,6 +47,23 @@ export async function POST(request: Request) {
     const fileBuffer = Buffer.from(await file.arrayBuffer());
     const sha256 = createHash("sha256").update(fileBuffer).digest("hex");
 
+    // 4.5 Verificación de duplicado
+    const { data: existingFile } = await supabase
+      .from("invoice_files")
+      .select("invoice_id")
+      .eq("sha256", sha256)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (existingFile) {
+      console.log("⚠️ Archivo duplicado detectado:", sha256);
+      return NextResponse.json({ 
+        message: "Factura ya cargada anteriormente", 
+        invoice_id: existingFile.invoice_id,
+        status: "duplicate" 
+      });
+    }
+
     // 5. Llamada a Gemini (Directa)
     console.log("🤖 Enviando a Gemini Flash...");
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -82,6 +99,11 @@ export async function POST(request: Request) {
     console.log("📥 Gemini Raw Response:", rawText);
     const extracted = JSON.parse(rawText);
     const totalCopFinal = Math.round(Number(extracted.total_cop) || 0);
+
+    console.log("📊 Datos extraídos a insertar:", {
+      ...extracted,
+      total_cop: totalCopFinal
+    });
 
     // 6. Guardar en Base de Datos
     const { data: invoice, error: dbError } = await supabase
