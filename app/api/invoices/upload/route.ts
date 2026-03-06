@@ -51,7 +51,7 @@ export async function POST(request: Request) {
     console.log("🤖 Enviando a Gemini Flash...");
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      model: process.env.GEMINI_MODEL || "gemini-3-flash-preview",
+      model: "gemini-3-flash-preview",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -81,6 +81,7 @@ export async function POST(request: Request) {
     const rawText = result.response.text();
     console.log("📥 Gemini Raw Response:", rawText);
     const extracted = JSON.parse(rawText);
+    const totalCopFinal = Math.round(Number(extracted.total_cop) || 0);
 
     // 6. Guardar en Base de Datos
     const { data: invoice, error: dbError } = await supabase
@@ -89,7 +90,7 @@ export async function POST(request: Request) {
         user_id: user.id,
         supplier_name: extracted.supplier_name || "Desconocido",
         invoice_number: extracted.invoice_number,
-        total_cop: extracted.total_cop || 0,
+        total_cop: totalCopFinal,
         due_date: extracted.due_date,
         supplier_tax_id: extracted.supplier_nit,
         status: "unpaid",

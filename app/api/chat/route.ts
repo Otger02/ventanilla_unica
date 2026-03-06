@@ -1482,12 +1482,9 @@ export async function POST(request: NextRequest) {
 
     try {
       const model = genAI.getGenerativeModel({
-        model: geminiModel,
-        systemInstruction: fullPrompt,
-      });
-
-      const chat = model.startChat({ history: geminiHistory });
-      const result = await chat.sendMessage(message);
+          model: "gemini-3-flash-preview",
+          systemInstruction: fullPrompt,
+        });
       openAiDurationMs = Date.now() - openAiStart;
 
       console.info("[api/chat] Gemini request completed", {
