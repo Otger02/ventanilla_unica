@@ -10,7 +10,7 @@ function sanitizeFileName(name: string) {
 
 function getExtension(fileName: string, mimeType: string) {
   if (mimeType === "application/pdf") return "pdf";
-  const ext = sanitizeFileName(fileName).split(".").pop();
+  const ext = fileName.split(".").pop();
   return ext && /^[a-z0-9]+$/.test(ext) ? ext : "bin";
 }
 
@@ -44,13 +44,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Archivo inválido" }, { status: 400 });
     }
 
-    const extension = getExtension(file.name, file.type);
-    const detectedMimeType = file.type || (extension === "pdf" ? "application/pdf" : "application/octet-stream");
-
-    if (detectedMimeType !== "application/pdf" && extension !== "pdf") {
-      return NextResponse.json({ error: "Solo se permiten archivos PDF" }, { status: 400 });
-    }
-
     const fileBuffer = Buffer.from(await file.arrayBuffer());
     const sha256 = createHash("sha256").update(fileBuffer).digest("hex");
 
@@ -58,7 +51,7 @@ export async function POST(request: Request) {
     console.log("🤖 Enviando a Gemini Flash...");
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-1.5-flash-001",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -79,7 +72,7 @@ export async function POST(request: Request) {
       {
         inlineData: {
           data: fileBuffer.toString("base64"),
-          mimeType: detectedMimeType,
+          mimeType: file.type || "application/pdf",
         },
       },
       { text: "Extrae datos de esta factura. Si no ves fecha de vencimiento, calcula +30 días." },
@@ -108,11 +101,8 @@ export async function POST(request: Request) {
     if (dbError) throw new Error(`Error DB: ${dbError.message}`);
 
     // 7. Subir PDF a Storage
-    const storagePath = `${user.id}/${invoice.id}/original.${extension}`;
-    await supabase.storage.from("invoices").upload(storagePath, fileBuffer, {
-      contentType: detectedMimeType,
-      upsert: false,
-    });
+    const storagePath = `${user.id}/${invoice.id}/original.${getExtension(file.name, file.type)}`;
+    await supabase.storage.from("invoices").upload(storagePath, fileBuffer);
     
     // 8. Registrar Archivo
     await supabase.from("invoice_files").insert({
@@ -120,7 +110,7 @@ export async function POST(request: Request) {
       user_id: user.id,
       storage_bucket: "invoices",
       storage_path: storagePath,
-      mime_type: detectedMimeType,
+      mime_type: file.type,
       size_bytes: file.size,
       sha256
     });
