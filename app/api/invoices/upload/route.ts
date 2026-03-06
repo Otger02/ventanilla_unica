@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+﻿import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -44,6 +44,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Archivo inválido" }, { status: 400 });
     }
 
+    const extension = getExtension(file.name, file.type);
+    const detectedMimeType = file.type || (extension === "pdf" ? "application/pdf" : "application/octet-stream");
+
+    if (detectedMimeType !== "application/pdf" && extension !== "pdf") {
+      return NextResponse.json({ error: "Solo se permiten archivos PDF" }, { status: 400 });
+    }
+
     const fileBuffer = Buffer.from(await file.arrayBuffer());
     const sha256 = createHash("sha256").update(fileBuffer).digest("hex");
 
@@ -72,7 +79,7 @@ export async function POST(request: Request) {
       {
         inlineData: {
           data: fileBuffer.toString("base64"),
-          mimeType: file.type || "application/pdf",
+          mimeType: detectedMimeType,
         },
       },
       { text: "Extrae datos de esta factura. Si no ves fecha de vencimiento, calcula +30 días." },
@@ -101,8 +108,11 @@ export async function POST(request: Request) {
     if (dbError) throw new Error(`Error DB: ${dbError.message}`);
 
     // 7. Subir PDF a Storage
-    const storagePath = `${user.id}/${invoice.id}/original.${getExtension(file.name, file.type)}`;
-    await supabase.storage.from("invoices").upload(storagePath, fileBuffer);
+    const storagePath = `${user.id}/${invoice.id}/original.${extension}`;
+    await supabase.storage.from("invoices").upload(storagePath, fileBuffer, {
+      contentType: detectedMimeType,
+      upsert: false,
+    });
     
     // 8. Registrar Archivo
     await supabase.from("invoice_files").insert({
@@ -110,7 +120,7 @@ export async function POST(request: Request) {
       user_id: user.id,
       storage_bucket: "invoices",
       storage_path: storagePath,
-      mime_type: file.type,
+      mime_type: detectedMimeType,
       size_bytes: file.size,
       sha256
     });
@@ -118,8 +128,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, invoice });
 
   } catch (error: unknown) {
-    console.error("🔥 Error en Upload:", error);
-    const message = error instanceof Error ? error.message : "Unknown upload error";
+    const message = error instanceof Error ? error.message : "Error desconocido";
+    console.error("🔥 Error en Upload:", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
