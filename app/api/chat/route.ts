@@ -1482,7 +1482,7 @@ export async function POST(request: NextRequest) {
 
     try {
       const model = genAI.getGenerativeModel({
-        model: geminiModel,
+        model: "gemini-3-flash-preview",
         systemInstruction: fullPrompt,
       });
 
