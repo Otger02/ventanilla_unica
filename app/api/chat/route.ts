@@ -1230,6 +1230,17 @@ export async function POST(request: NextRequest) {
       authenticatedUserId,
     );
 
+    let pendingInvoicesList: { supplier_name: string, total_cop: number, due_date: string }[] = [];
+    if (authenticatedUserId) {
+      const { data: rawInvoices } = await supabase
+        .from("invoices")
+        .select("supplier_name, total_cop, due_date")
+        .eq("user_id", authenticatedUserId)
+        .eq("status", "pending")
+        .order("due_date", { ascending: true });
+      if (rawInvoices) pendingInvoicesList = rawInvoices;
+    }
+
     const taxIntent = detectTaxIntent(message);
     const taxIntentDetected = taxIntent.detected;
     const financialIntent = detectFinancialIntent(normalizedMessage);
@@ -1327,6 +1338,18 @@ export async function POST(request: NextRequest) {
       ].join("\n"),
       TERMINOLOGIA_CO_LINES.join("\n"),
     ];
+
+    if (pendingInvoicesList && pendingInvoicesList.length > 0) {
+      promptSections.push(
+        [
+          "PENDING_INVOICES_LIST_REAL_DATA:",
+          JSON.stringify(pendingInvoicesList, null, 2),
+          "INSTRUCCION_FACTURAS_PENDIENTES:",
+          "Usa esta lista para responder si el usuario pregunta 'qué facturas tengo', '¿qué debo?', 'cuánto debo', etc.",
+          "Genera una tabla Markdown limpia siempre con montos en COP, y la fecha de vencimiento.",
+        ].join("\n")
+      );
+    }
 
     if (
       financialContextPayload.monthly_inputs_status === "fallback_used" &&
