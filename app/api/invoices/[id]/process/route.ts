@@ -36,7 +36,7 @@ export async function POST(
 
     // 2. Procesar con Gemini (Simulación de análisis profundo)
     const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-1.5-flash-latest" });
+      const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-3-flash-preview" });
 
     const prompt = `Analiza esta factura para contabilidad:
     Proveedor: ${invoice.supplier_name}
