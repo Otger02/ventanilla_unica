@@ -25,16 +25,16 @@ function splitAssistantSections(content: string): string[] {
 export function ChatBubble({ role, content, onCopy, onSave }: ChatBubbleProps) {
   if (role === "user") {
     return (
-      <Card className="ml-auto max-w-[85%] border-0 bg-zinc-900 p-3 text-sm text-white dark:bg-zinc-100 dark:text-zinc-900">
-        <p className="whitespace-pre-wrap">{content}</p>
-      </Card>
+      <div className="ml-auto max-w-[85%] rounded-lg bg-blue-600 p-3 text-sm text-white shadow-sm dark:bg-blue-500">
+        <p className="whitespace-pre-wrap text-white">{content}</p>
+      </div>
     );
   }
 
   const sections = splitAssistantSections(content);
 
   return (
-    <Card className="max-w-[85%] border-0 bg-zinc-100 p-3 text-sm text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
+    <div className="max-w-[85%] rounded-lg border border-zinc-200 bg-zinc-100 p-4 text-sm text-zinc-900 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-100">
       <div className="mb-2 flex items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           Plan recomendado
@@ -59,6 +59,6 @@ export function ChatBubble({ role, content, onCopy, onSave }: ChatBubbleProps) {
           </div>
         ))}
       </div>
-    </Card>
+    </div>
   );
 }

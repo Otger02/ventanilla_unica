@@ -178,23 +178,24 @@ export function EmbedChatClient({ theme, title }: EmbedChatClientProps) {
                 key={`${messageItem.role}-${index}`}
                 className={`max-w-[92%] rounded-md px-2.5 py-2 text-xs ${
                   messageItem.role === "user"
-                    ? isDark
-                      ? "ml-auto bg-zinc-100 text-zinc-900"
-                      : "ml-auto bg-zinc-900 text-white"
+                    ? "ml-auto bg-blue-600 text-white"
                     : isDark
                       ? "bg-zinc-800 text-zinc-100"
                       : "bg-zinc-100 text-zinc-900"
                 }`}
               >
-                <div
-                  className={`max-w-none whitespace-normal prose prose-sm [&_p]:my-2 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:p-3 [&_a]:break-all [&_a]:underline ${
-                    isDark
-                      ? "prose-invert [&_pre]:bg-zinc-950 [&_pre]:text-zinc-100 [&_a]:text-blue-300"
-                      : "[&_pre]:bg-zinc-900 [&_pre]:text-zinc-100 [&_a]:text-blue-600"
-                  }`}
-                >
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
+                {messageItem.role === "user" ? (
+                  <p className="whitespace-pre-wrap">{messageItem.content}</p>
+                ) : (
+                  <div
+                    className={`max-w-none whitespace-normal prose prose-sm [&_p]:my-2 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:p-3 [&_a]:break-all [&_a]:underline ${
+                      isDark
+                        ? "prose-invert [&_pre]:bg-zinc-950 [&_pre]:text-zinc-100 [&_a]:text-blue-300"
+                        : "[&_pre]:bg-zinc-900 [&_pre]:text-zinc-100 [&_a]:text-blue-600"
+                    }`}
+                  >
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
                     components={{
                       a: ({ node: _node, ...props }) => (
                         <a {...props} target="_blank" rel="noreferrer noopener" />
@@ -224,6 +225,7 @@ export function EmbedChatClient({ theme, title }: EmbedChatClientProps) {
                     {renderedContent}
                   </ReactMarkdown>
                 </div>
+                )}
               </li>
               );
             })}
