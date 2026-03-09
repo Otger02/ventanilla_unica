@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Upload, FileText, Trash2, CreditCard, Receipt, FileSearch } from "lucide-react";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
@@ -530,25 +531,35 @@ export function ChatClient({
     return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
   }
 
-  function getPaymentStatusLabel(status: "unpaid" | "scheduled" | "paid") {
-    if (status === "paid") {
-      return "paid";
+  function getPaymentStatusLabel(invoice: InvoiceItem) {
+    if (invoice.payment_status === "paid") {
+      return "Pagado";
     }
 
-    if (status === "scheduled") {
-      return "scheduled";
+    if (invoice.payment_status === "scheduled") {
+      return "Programado";
     }
 
-    return "unpaid";
+    const dueDate = getInvoiceDueDate(invoice);
+    if (dueDate && new Date(dueDate) < new Date()) {
+      return "Vencido";
+    }
+
+    return "Pendiente";
   }
 
-  function getPaymentStatusClasses(status: "unpaid" | "scheduled" | "paid") {
-    if (status === "paid") {
+  function getPaymentStatusClasses(invoice: InvoiceItem) {
+    if (invoice.payment_status === "paid") {
       return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
     }
 
-    if (status === "scheduled") {
+    if (invoice.payment_status === "scheduled") {
       return "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200";
+    }
+
+    const dueDate = getInvoiceDueDate(invoice);
+    if (dueDate && new Date(dueDate) < new Date()) {
+      return "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
     }
 
     return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
@@ -1800,7 +1811,7 @@ export function ChatClient({
                   onClick={handleInvoicePickerClick}
                   disabled={isUploadingInvoice}
                 >
-                  {isUploadingInvoice ? "Subiendo..." : "Subir factura"}
+                  {isUploadingInvoice ? "Subiendo..." : <><Upload className="mr-1.5 h-3.5 w-3.5 inline" /> Subir factura</>}
                 </Button>
               </div>
 
@@ -1817,9 +1828,16 @@ export function ChatClient({
               ) : null}
 
               {isLoadingInvoices ? (
-                <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Cargando facturas...</p>
+                <div className="mt-6 flex flex-col items-center justify-center p-8 text-center rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/50">
+                  <div className="h-8 w-8 animate-spin rounded-full border-4 border-zinc-300 border-t-blue-600 dark:border-zinc-600 dark:border-t-blue-400"></div>
+                  <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Cargando facturas...</p>
+                </div>
               ) : invoices.length === 0 ? (
-                <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No hay facturas cargadas.</p>
+                <div className="mt-6 flex flex-col items-center justify-center p-8 text-center rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/50">
+                  <FileText className="h-10 w-10 text-zinc-400 mb-3 dark:text-zinc-500" />
+                  <h3 className="text-base font-medium text-zinc-900 dark:text-zinc-100">Sin facturas</h3>
+                  <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Aún no has subido ninguna factura. Usa el botón de arriba para empezar.</p>
+                </div>
               ) : (
                 <div className="mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
                   <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
@@ -1849,9 +1867,9 @@ export function ChatClient({
                             <td className="px-3 py-2">
                               <div className="flex flex-col gap-1">
                                 <span
-                                  className={`inline-flex w-fit rounded-md border px-2 py-0.5 text-xs font-medium ${getPaymentStatusClasses(invoice.payment_status)}`}
+                                  className={`inline-flex w-fit rounded-md border px-2 py-0.5 text-xs font-medium ${getPaymentStatusClasses(invoice)}`}
                                 >
-                                  {getPaymentStatusLabel(invoice.payment_status)}
+                                  {getPaymentStatusLabel(invoice)}
                                 </span>
                                 {invoice.payment_status === "scheduled" ? (
                                   <span className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -1881,7 +1899,7 @@ export function ChatClient({
                                   onClick={() => void handlePayInvoice(invoice)}
                                   disabled={updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
                                 >
-                                  Pagar
+                                  <CreditCard className="mr-1.5 h-3.5 w-3.5 inline" /> Pagar
                                 </Button>
                                 <Button
                                   type="button"
@@ -1890,7 +1908,7 @@ export function ChatClient({
                                   onClick={() => handleReceiptPickerClick(invoice.id)}
                                   disabled={uploadingReceiptInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
                                 >
-                                  {uploadingReceiptInvoiceId === invoice.id ? "Subiendo..." : "Subir comprobante"}
+                                  {uploadingReceiptInvoiceId === invoice.id ? "Subiendo..." : <><Upload className="mr-1.5 h-3.5 w-3.5 inline" /> Subir comprobante</>}
                                 </Button>
                                 <Button
                                   type="button"
@@ -1899,7 +1917,7 @@ export function ChatClient({
                                   onClick={() => void loadInvoiceReceipts(invoice)}
                                   disabled={uploadingReceiptInvoiceId === invoice.id}
                                 >
-                                  Comprobantes ({invoice.receipts_count})
+                                  <Receipt className="mr-1.5 h-3.5 w-3.5 inline" /> Comprobantes ({invoice.receipts_count})
                                 </Button>
                                 <Button
                                   type="button"
@@ -1908,7 +1926,7 @@ export function ChatClient({
                                   onClick={() => void handleProcessInvoice(invoice.id)}
                                   disabled={processingInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id}
                                 >
-                                  {processingInvoiceId === invoice.id ? "Procesando..." : "Procesar"}
+                                  {processingInvoiceId === invoice.id ? "Procesando..." : <><FileSearch className="mr-1.5 h-3.5 w-3.5 inline" /> Procesar</>}
                                 </Button>
                                 <Button
                                   type="button"
@@ -2209,3 +2227,5 @@ export function ChatClient({
     </PageShell>
   );
 }
+
+
