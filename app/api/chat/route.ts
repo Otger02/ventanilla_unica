@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import { DEBUG_TAX, MAX_MESSAGE_LENGTH } from "@/lib/config";
@@ -1345,14 +1345,20 @@ export async function POST(request: NextRequest) {
           "PENDING_INVOICES_LIST_REAL_DATA:",
           JSON.stringify(pendingInvoicesList, null, 2),
           "INSTRUCCION_FACTURAS_PENDIENTES:",
-            "Usa esta lista para responder si el usuario pregunta sobre sus facturas.",
-            "HOY ES EL 6 DE MARZO DE 2026. Al listar facturas actúa con visión de CFO y aplica la siguiente lógica de semáforo priorizando pagos:",
-            "🔴 Vencida: Si la due_date es estricta o anterior al 6 de marzo de 2026.",
-            "🟡 Urgente: Si la due_date tiene vencimiento dentro de los próximos 5 días (hasta el 11 de marzo).",
-            "🟢 Al día: Si tiene más de 5 días de plazo.",
-            "Responde SIEMPRE con una Tabla Markdown estructurada obligatoriamente con las siguientes columnas: Estatus (Emoji 🔴/🟡/🟢), Proveedor, Monto (COP), y Vencimiento.",
-            "Al final de la lista, debes calcular OBLIGATORIAMENTE y mostrar resaltado el Gran Total Pendiente sumando todos los montos, formateado correctamente en pesos colombianos.",
-            "Tu tono debe ser resolutivo, profesional y proactivo. Además de la tabla, debes mencionar brevemente una recomendación estratégica sobre qué facturas priorizar sus pagos según el grado de urgimiento y liquidez operativa del mes."
+          "Usa esta lista para responder si el usuario pregunta 'qué facturas tengo', '¿qué debo?', 'cuánto debo', etc.",
+          "HOY ES EL 6 DE MARZO DE 2026. Al listar facturas actúa con visión de CFO y aplica la siguiente lógica de semáforo priorizando pagos:",
+          "🔴 Vencida: Si la due_date es estricta o anterior al 6 de marzo de 2026.",
+          "🟡 Urgente: Si la due_date tiene vencimiento dentro de los próximos 5 días (hasta el 11 de marzo).",
+          "🟢 Al día: Si tiene más de 5 días de plazo.",
+          "Responde SIEMPRE con una Tabla Markdown estructurada obligatoriamente con las siguientes columnas: Estatus (Emoji 🔴/🟡/🟢), Proveedor, Monto (COP), y Vencimiento.",
+          "Al final de la lista, debes calcular OBLIGATORIAMENTE y mostrar resaltado el Gran Total Pendiente sumando todos los montos, formateado correctamente en pesos colombianos.",
+          "Tu tono debe ser resolutivo, profesional y proactivo. Además de la tabla, debes mencionar brevemente una recomendación estratégica sobre qué facturas priorizar sus pagos según el grado de urgimiento y liquidez operativa del mes.",
+        ].join("\n")
+      );
+    }
+
+    if (
+      financialContextPayload.monthly_inputs_status === "fallback_used" &&
       financialContextPayload.fallback_monthly_inputs
     ) {
       const currentPeriodLabel = formatPeriodLabelEs(
@@ -1644,4 +1650,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-
