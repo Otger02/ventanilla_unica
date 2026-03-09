@@ -1230,13 +1230,12 @@ export async function POST(request: NextRequest) {
       authenticatedUserId,
     );
 
-    let pendingInvoicesList: { supplier_name: string, total_cop: number, due_date: string }[] = [];
+    let pendingInvoicesList: { supplier_name: string, total_cop: number, due_date: string, payment_status: string }[] = [];
     if (authenticatedUserId) {
       const { data: rawInvoices } = await supabase
         .from("invoices")
-        .select("supplier_name, total_cop, due_date")
+        .select("supplier_name, total_cop, due_date, payment_status")
         .eq("user_id", authenticatedUserId)
-        .eq("status", "pending")
         .order("due_date", { ascending: true });
       if (rawInvoices) pendingInvoicesList = rawInvoices;
     }
@@ -1340,22 +1339,24 @@ export async function POST(request: NextRequest) {
     ];
 
     if (pendingInvoicesList && pendingInvoicesList.length > 0) {
-      promptSections.push(
-        [
-          "PENDING_INVOICES_LIST_REAL_DATA:",
-          JSON.stringify(pendingInvoicesList, null, 2),
-          "INSTRUCCION_FACTURAS_PENDIENTES:",
-          "Usa esta lista para responder si el usuario pregunta 'qué facturas tengo', '¿qué debo?', 'cuánto debo', etc.",
-          "HOY ES EL 6 DE MARZO DE 2026. Al listar facturas actúa con visión de CFO y aplica la siguiente lógica de semáforo priorizando pagos:",
-          "🔴 Vencida: Si la due_date es estricta o anterior al 6 de marzo de 2026.",
-          "🟡 Urgente: Si la due_date tiene vencimiento dentro de los próximos 5 días (hasta el 11 de marzo).",
-          "🟢 Al día: Si tiene más de 5 días de plazo.",
-          ""Responde SIEMPRE con una Tabla Markdown estructurada obligatoriamente con las siguientes columnas: Estatus (Emoji 🔴/🟡/🟢), Proveedor, Monto (COP), y Vencimiento.",
+        promptSections.push(
+          [
+            "ALL_INVOICES_LIST_REAL_DATA:",
+            JSON.stringify(pendingInvoicesList, null, 2),
+            "INSTRUCCION_FACTURAS_PENDIENTES_Y_PAGADAS:",
+            "Usa esta lista para responder si el usuario pregunta 'qué facturas tengo', '¿qué debo?', 'cuánto debo' o temas relacionados con pagos.",
+            "Importante: Las facturas con payment_status 'paid' ya están pagadas. Las 'unpaid' o 'scheduled' están pendientes.",
+            "El CFO SIEMPRE debe incluir y decir exactamente esta frase en su respuesta: 'Has pagado $X y te faltan $Y por pagar', donde $X es la suma de las facturas pagadas y $Y es la suma de las facturas pendientes. Formatea todo en pesos colombianos.",
+            "HOY ES EL 6 DE MARZO DE 2026. Al listar facturas pendientes actúa con visión de CFO y aplica la siguiente lógica de semáforo priorizando pagos:",
+            "🔴 Vencida: Si la due_date es estricta o anterior al 6 de marzo de 2026.",
+            "🟡 Urgente: Si la due_date tiene vencimiento dentro de los próximos 5 días (hasta el 11 de marzo).",
+            "🟢 Al día: Si tiene más de 5 días de plazo.",
+            "Responde SIEMPRE con una Tabla Markdown estructurada obligatoriamente con las siguientes columnas para las pendientes: Estatus (Emoji 🔴/🟡/🟢), Proveedor, Monto (COP), y Vencimiento.",
             "Al final de la tabla, debes calcular OBLIGATORIAMENTE el Gran Total Pendiente.",
-            "NO añadas textos de relleno ni recomendaciones antes o después de la tabla de facturas..",
-        ].join("\n")
-      );
-    }
+            "NO añadas textos de relleno ni recomendaciones antes o después de la tabla de facturas."
+          ].join("\n")
+        );
+      }
 
     if (
       financialContextPayload.monthly_inputs_status === "fallback_used" &&

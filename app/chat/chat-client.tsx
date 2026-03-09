@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FileText } from "lucide-react";
+import { FileText, CheckCircle } from "lucide-react";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
@@ -1121,7 +1121,8 @@ export function ChatClient({
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch(`/api/invoices/${invoiceId}/receipts/upload`, {
+      formData.append("invoiceId", invoiceId);
+        const response = await fetch(`/api/receipts/upload`, {
         method: "POST",
         body: formData,
       });
@@ -1899,15 +1900,16 @@ export function ChatClient({
                               Pagar
                             </Button>
                             <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="w-full text-xs"
-                              onClick={() => handleReceiptPickerClick(invoice.id)}
-                              disabled={uploadingReceiptInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
-                            >
-                              {uploadingReceiptInvoiceId === invoice.id ? "Subiendo..." : "Comprobante"}
-                            </Button>
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="w-full text-xs flex items-center justify-center gap-1"
+                                onClick={() => handleReceiptPickerClick(invoice.id)}
+                                disabled={uploadingReceiptInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
+                              >
+                                <CheckCircle className="h-3.5 w-3.5" />
+                                {uploadingReceiptInvoiceId === invoice.id ? "Registrando..." : "Registrar Pago"}
+                              </Button>
                           </div>
                           
                           <div className="grid grid-cols-2 gap-2">
