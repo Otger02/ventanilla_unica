@@ -1350,9 +1350,9 @@ export async function POST(request: NextRequest) {
           "🔴 Vencida: Si la due_date es estricta o anterior al 6 de marzo de 2026.",
           "🟡 Urgente: Si la due_date tiene vencimiento dentro de los próximos 5 días (hasta el 11 de marzo).",
           "🟢 Al día: Si tiene más de 5 días de plazo.",
-          "Responde SIEMPRE con una Tabla Markdown estructurada obligatoriamente con las siguientes columnas: Estatus (Emoji 🔴/🟡/🟢), Proveedor, Monto (COP), y Vencimiento.",
-          "Al final de la lista, debes calcular OBLIGATORIAMENTE y mostrar resaltado el Gran Total Pendiente sumando todos los montos, formateado correctamente en pesos colombianos.",
-          "Tu tono debe ser resolutivo, profesional y proactivo. Además de la tabla, debes mencionar brevemente una recomendación estratégica sobre qué facturas priorizar sus pagos según el grado de urgimiento y liquidez operativa del mes.",
+          ""Responde SIEMPRE con una Tabla Markdown estructurada obligatoriamente con las siguientes columnas: Estatus (Emoji 🔴/🟡/🟢), Proveedor, Monto (COP), y Vencimiento.",
+            "Al final de la tabla, debes calcular OBLIGATORIAMENTE el Gran Total Pendiente.",
+            "NO añadas textos de relleno ni recomendaciones antes o después de la tabla de facturas..",
         ].join("\n")
       );
     }
@@ -1488,7 +1488,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    
+
+    const REGLAS_DE_ORO = [
+      "REGLAS DE ORO:",
+      "- OMITE introducciones como \"Soy tu CFO\", \"Como experto...\", o \"He analizado tus documentos\".",
+      "- OMITE confirmaciones de lectura.",
+      "- RESPUESTA DIRECTA: Empieza siempre con la información solicitada. Si pregunto por una fecha, la primera palabra de tu respuesta debe ser la fecha o el contexto de la misma.",
+      "- TONO: Profesional, técnico y breve. Usa el Calendario 2026 y el Estatuto Tributario como si fueran tu propia memoria, sin citarlos a menos que sea necesario para dar validez (ej: \"Según el Art. X...\").",
+      "- FORMATO: Manten la tabla Markdown con los emojis (🔴, 🟡, 🟢) solo cuando se listen facturas, sin textos de relleno antes o después.",
+    ].join("\n");
+
     const fullPrompt = [
+      REGLAS_DE_ORO,
       ventanillaUnicaSystemPrompt,
       "PRIORIDAD_LEGAL_COLOMBIA: En estrategia de tesorería, prioriza deudas DIAN (IVA y retenciones) sobre proveedores comerciales por mayor riesgo legal/sancionatorio. Cuando existan montos, exprésalos en COP con formato colombiano.",
       promptSections.join("\n\n"),
@@ -1511,7 +1523,7 @@ export async function POST(request: NextRequest) {
       },
       {
         role: "model",
-        parts: [{ text: "Entendido. Soy tu CFO experto en normativa colombiana y tengo tus facturas a la vista. ¿Cuál es tu consulta tributaria o financiera?" }],
+        parts: [{ text: "Listo. ¿Qué consulta tienes sobre tus cuentas o la normativa?" }],
       },
       ...baseGeminiHistory
     ];
