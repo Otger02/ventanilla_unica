@@ -25,7 +25,7 @@ function splitAssistantSections(content: string): string[] {
 export function ChatBubble({ role, content, onCopy, onSave }: ChatBubbleProps) {
   if (role === "user") {
     return (
-      <div className="ml-auto max-w-[85%] rounded-lg bg-blue-600 p-3 text-sm text-white shadow-sm dark:bg-blue-500">
+      <div className="ml-auto max-w-[85%] rounded-lg bg-blue-600 p-3 text-sm text-white shadow-sm dark:bg-gray-800">
         <p className="whitespace-pre-wrap text-white">{content}</p>
       </div>
     );
@@ -34,9 +34,9 @@ export function ChatBubble({ role, content, onCopy, onSave }: ChatBubbleProps) {
   const sections = splitAssistantSections(content);
 
   return (
-    <div className="max-w-[85%] rounded-lg border border-zinc-200 bg-zinc-100 p-4 text-sm text-zinc-900 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-100">
+    <div className="max-w-[85%] rounded-lg border border-gray-200 bg-gray-100 p-4 text-sm text-black dark:border-gray-700 dark:bg-gray-200 dark:text-black">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        <p className="text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-600">
           Plan recomendado
         </p>
         <div className="flex items-center gap-1">
@@ -53,9 +53,9 @@ export function ChatBubble({ role, content, onCopy, onSave }: ChatBubbleProps) {
         {sections.map((section, index) => (
           <div
             key={`assistant-section-${index}`}
-            className="rounded-md border border-zinc-200 bg-white/70 p-3 dark:border-zinc-700 dark:bg-zinc-900/60"
+            className="rounded-md border border-gray-300 bg-white/80 p-3 dark:border-gray-400 dark:bg-white/80"
           >
-            <RichText content={section} dark className="prose-sm" />
+            <RichText content={section} className="prose-sm text-black" />
           </div>
         ))}
       </div>

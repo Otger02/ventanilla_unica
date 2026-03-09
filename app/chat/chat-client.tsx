@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Upload, FileText, Trash2, CreditCard, Receipt, FileSearch } from "lucide-react";
+import { FileText } from "lucide-react";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
@@ -531,35 +531,25 @@ export function ChatClient({
     return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
   }
 
-  function getPaymentStatusLabel(invoice: InvoiceItem) {
-    if (invoice.payment_status === "paid") {
-      return "Pagado";
+  function getPaymentStatusLabel(status: "unpaid" | "scheduled" | "paid") {
+    if (status === "paid") {
+      return "paid";
     }
 
-    if (invoice.payment_status === "scheduled") {
-      return "Programado";
+    if (status === "scheduled") {
+      return "scheduled";
     }
 
-    const dueDate = getInvoiceDueDate(invoice);
-    if (dueDate && new Date(dueDate) < new Date()) {
-      return "Vencido";
-    }
-
-    return "Pendiente";
+    return "unpaid";
   }
 
-  function getPaymentStatusClasses(invoice: InvoiceItem) {
-    if (invoice.payment_status === "paid") {
+  function getPaymentStatusClasses(status: "unpaid" | "scheduled" | "paid") {
+    if (status === "paid") {
       return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
     }
 
-    if (invoice.payment_status === "scheduled") {
+    if (status === "scheduled") {
       return "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200";
-    }
-
-    const dueDate = getInvoiceDueDate(invoice);
-    if (dueDate && new Date(dueDate) < new Date()) {
-      return "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
     }
 
     return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
@@ -840,11 +830,12 @@ export function ChatClient({
         throw new Error(data.error || "No se pudo subir la factura.");
       }
 
-      setInvoiceUploadMessage(
-        data.status === "duplicate"
-          ? "Archivo duplicado: ya existe una factura asociada."
-          : "Factura cargada correctamente.",
-      );
+      if (data.status === "duplicate") {
+        window.alert("Esta factura ya fue cargada anteriormente.");
+        setInvoiceUploadMessage("Archivo duplicado: ya existe una factura asociada.");
+      } else {
+        setInvoiceUploadMessage("Factura cargada correctamente.");
+      }
       await loadInvoices();
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo subir la factura.";
@@ -1811,7 +1802,7 @@ export function ChatClient({
                   onClick={handleInvoicePickerClick}
                   disabled={isUploadingInvoice}
                 >
-                  {isUploadingInvoice ? "Subiendo..." : <><Upload className="mr-1.5 h-3.5 w-3.5 inline" /> Subir factura</>}
+                  {isUploadingInvoice ? "Subiendo..." : "Subir factura"}
                 </Button>
               </div>
 
@@ -1828,152 +1819,158 @@ export function ChatClient({
               ) : null}
 
               {isLoadingInvoices ? (
-                <div className="mt-6 flex flex-col items-center justify-center p-8 text-center rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/50">
-                  <div className="h-8 w-8 animate-spin rounded-full border-4 border-zinc-300 border-t-blue-600 dark:border-zinc-600 dark:border-t-blue-400"></div>
-                  <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Cargando facturas...</p>
-                </div>
+                <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Cargando facturas...</p>
               ) : invoices.length === 0 ? (
-                <div className="mt-6 flex flex-col items-center justify-center p-8 text-center rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/50">
-                  <FileText className="h-10 w-10 text-zinc-400 mb-3 dark:text-zinc-500" />
-                  <h3 className="text-base font-medium text-zinc-900 dark:text-zinc-100">Sin facturas</h3>
-                  <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Aún no has subido ninguna factura. Usa el botón de arriba para empezar.</p>
-                </div>
+                <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No hay facturas cargadas.</p>
               ) : (
-                <div className="mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
-                  <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-                    <thead className="bg-zinc-50 dark:bg-zinc-900">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-medium">Fecha</th>
-                        <th className="px-3 py-2 text-left font-medium">Archivo</th>
-                        <th className="px-3 py-2 text-left font-medium">Proveedor</th>
-                        <th className="px-3 py-2 text-left font-medium">Total</th>
-                        <th className="px-3 py-2 text-left font-medium">Vence</th>
-                        <th className="px-3 py-2 text-left font-medium">Estado pago</th>
-                        <th className="px-3 py-2 text-left font-medium">Estado extracción</th>
-                        <th className="px-3 py-2 text-left font-medium">Acción</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-900">
-                      {invoices.map((invoice) => {
-                        const extractionStatus = getInvoiceDisplayStatus(invoice);
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {invoices.map((invoice) => {
+                    const extractionStatus = getInvoiceDisplayStatus(invoice);
+                    const dueDate = getInvoiceDueDate(invoice);
+                    // Compare dueDate with today
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    let dueColorClass = "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
+                    let dueLabel = "Al d�a";
+                    if (invoice.payment_status === "paid") {
+                      dueColorClass = "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
+                      dueLabel = "Pagada";
+                    } else if (dueDate) {
+                      const dDate = new Date(dueDate);
+                      dDate.setHours(0, 0, 0, 0);
+                      const diffTime = dDate.getTime() - today.getTime();
+                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                      if (diffDays < 0) {
+                        dueColorClass = "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
+                        dueLabel = "Vencida";
+                      } else if (diffDays <= 5) {
+                        dueColorClass = "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400";
+                        dueLabel = "Vence pronto";
+                      } else {
+                        dueColorClass = "bg-zinc-100 text-zinc-700 dark:bg-zinc-900/30 dark:text-zinc-400";
+                        dueLabel = "Al d�a";
+                      }
+                    }
 
-                        return (
-                          <tr key={invoice.id}>
-                            <td className="px-3 py-2">{formatDateTime(invoice.created_at)}</td>
-                            <td className="px-3 py-2">{invoice.filename ?? "—"}</td>
-                            <td className="px-3 py-2">{invoice.supplier_name ?? "—"}</td>
-                            <td className="px-3 py-2">{invoice.total_cop !== null ? formatCop(invoice.total_cop) : "—"}</td>
-                            <td className="px-3 py-2">{formatDateOnly(getInvoiceDueDate(invoice))}</td>
-                            <td className="px-3 py-2">
-                              <div className="flex flex-col gap-1">
-                                <span
-                                  className={`inline-flex w-fit rounded-md border px-2 py-0.5 text-xs font-medium ${getPaymentStatusClasses(invoice)}`}
-                                >
-                                  {getPaymentStatusLabel(invoice)}
-                                </span>
-                                {invoice.payment_status === "scheduled" ? (
-                                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                                    {formatDateOnly(invoice.scheduled_payment_date)}
-                                  </span>
-                                ) : null}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2">
-                              <div className="flex flex-col gap-1">
-                                <span
-                                  className={`inline-flex w-fit rounded-md border px-2 py-0.5 text-xs font-medium ${getExtractionStatusClasses(extractionStatus)}`}
-                                >
-                                  {getExtractionStatusLabel(extractionStatus)}
-                                </span>
-                                {extractionStatus === "needs_ocr" ? (
-                                  <span className="text-xs text-amber-700 dark:text-amber-300">Requiere OCR (próximo)</span>
-                                ) : null}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => void handlePayInvoice(invoice)}
-                                  disabled={updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
-                                >
-                                  <CreditCard className="mr-1.5 h-3.5 w-3.5 inline" /> Pagar
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => handleReceiptPickerClick(invoice.id)}
-                                  disabled={uploadingReceiptInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
-                                >
-                                  {uploadingReceiptInvoiceId === invoice.id ? "Subiendo..." : <><Upload className="mr-1.5 h-3.5 w-3.5 inline" /> Subir comprobante</>}
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => void loadInvoiceReceipts(invoice)}
-                                  disabled={uploadingReceiptInvoiceId === invoice.id}
-                                >
-                                  <Receipt className="mr-1.5 h-3.5 w-3.5 inline" /> Comprobantes ({invoice.receipts_count})
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => void handleProcessInvoice(invoice.id)}
-                                  disabled={processingInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id}
-                                >
-                                  {processingInvoiceId === invoice.id ? "Procesando..." : <><FileSearch className="mr-1.5 h-3.5 w-3.5 inline" /> Procesar</>}
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => openScheduleModal(invoice)}
-                                  disabled={updatingPaymentInvoiceId === invoice.id}
-                                >
-                                  Programar
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => void handleMarkInvoicePaid(invoice)}
-                                  disabled={updatingPaymentInvoiceId === invoice.id || invoice.payment_status === "paid"}
-                                >
-                                  {updatingPaymentInvoiceId === invoice.id && invoice.payment_status !== "paid" ? "Guardando..." : "Marcar pagada"}
-                                </Button>
-                                {invoice.payment_status === "scheduled" ? (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => void handleCancelInvoiceSchedule(invoice)}
-                                    disabled={updatingPaymentInvoiceId === invoice.id}
-                                  >
-                                    Cancelar programación
-                                  </Button>
-                                ) : null}
-                                {extractionStatus === "processed" ? (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setDetailsInvoice(invoice)}
-                                  >
-                                    Ver detalles
-                                  </Button>
-                                ) : null}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                    return (
+                      <Card
+                        key={invoice.id}
+                        className="flex flex-col rounded-xl border-slate-200 p-4 shadow-sm dark:border-zinc-800"
+                      >
+                        <div className="mb-4 flex items-start justify-between gap-2">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                            <FileText className="h-5 w-5" />
+                          </div>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${dueColorClass}`}
+                          >
+                            {dueLabel}
+                          </span>
+                        </div>
+
+                        <div className="mb-4">
+                          <h3 className="truncate text-base font-semibold text-zinc-900 dark:text-zinc-100" title={invoice.supplier_name || "Proveedor"}>
+                            {invoice.supplier_name || "Proveedor desconocido"}
+                          </h3>
+                          <p className="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400" title={invoice.filename || ""}>
+                            {invoice.filename || "Sin archivo adjunto"}
+                          </p>
+                        </div>
+
+                        <div className="mb-4">
+                          <div className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
+                            {invoice.total_cop !== null ? formatCop(invoice.total_cop) : "�"}
+                          </div>
+                          <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                            Vence: {formatDateOnly(dueDate)}
+                          </div>
+                        </div>
+
+                        <div className="mt-auto flex flex-col gap-2">
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => void handlePayInvoice(invoice)}
+                              disabled={updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
+                            >
+                              Pagar
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => handleReceiptPickerClick(invoice.id)}
+                              disabled={uploadingReceiptInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id || processingInvoiceId === invoice.id}
+                            >
+                              {uploadingReceiptInvoiceId === invoice.id ? "Subiendo..." : "Comprobante"}
+                            </Button>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="w-full text-xs"
+                                onClick={() => void loadInvoiceReceipts(invoice)}
+                                disabled={uploadingReceiptInvoiceId === invoice.id}
+                            >
+                                Recibos ({invoice.receipts_count})
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => void handleProcessInvoice(invoice.id)}
+                              disabled={processingInvoiceId === invoice.id || updatingPaymentInvoiceId === invoice.id}
+                            >
+                              {processingInvoiceId === invoice.id ? "Procesando..." : "Re-procesar"}
+                            </Button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => openScheduleModal(invoice)}
+                              disabled={updatingPaymentInvoiceId === invoice.id}
+                            >
+                              Programar
+                            </Button>
+                            {invoice.payment_status === "scheduled" ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="w-full text-xs"
+                                onClick={() => void handleCancelInvoiceSchedule(invoice)}
+                                disabled={updatingPaymentInvoiceId === invoice.id}
+                              >
+                                Cancelar
+                              </Button>
+                            ) : (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="w-full text-xs"
+                                onClick={() => void handleMarkInvoicePaid(invoice)}
+                                disabled={updatingPaymentInvoiceId === invoice.id || invoice.payment_status === "paid"}
+                              >
+                                {invoice.payment_status === "paid" ? "Pagada" : "Marcar pagada"}
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </Card>
+                    );
+                  })}
                 </div>
               )}
 
@@ -2227,5 +2224,3 @@ export function ChatClient({
     </PageShell>
   );
 }
-
-
