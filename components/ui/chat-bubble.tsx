@@ -26,7 +26,7 @@ export function ChatBubble({ role, content, onCopy, onSave }: ChatBubbleProps) {
   if (role === "user") {
     return (
       <div className="ml-auto max-w-[85%] rounded-lg bg-blue-600 p-3 text-sm text-white shadow-sm dark:bg-blue-500">
-        <p className="whitespace-pre-wrap">{content}</p>
+        <p className="whitespace-pre-wrap text-white">{content}</p>
       </div>
     );
   }
