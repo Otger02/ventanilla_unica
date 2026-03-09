@@ -1494,10 +1494,27 @@ export async function POST(request: NextRequest) {
       promptSections.join("\n\n"),
     ].join("\n\n");
 
-    const geminiHistory = history.map((item) => ({
+    const baseGeminiHistory = history.map((item: any) => ({
       role: item.role === "assistant" ? "model" : "user",
       parts: [{ text: item.content }],
     }));
+
+    const geminiHistory = [
+      {
+        role: "user",
+        parts: [
+          { fileData: { mimeType: "application/pdf", fileUri: "https://generativelanguage.googleapis.com/v1beta/files/xmjzrh532617" } },
+          { fileData: { mimeType: "application/pdf", fileUri: "https://generativelanguage.googleapis.com/v1beta/files/fwodctvd7yy1" } },
+          { fileData: { mimeType: "application/pdf", fileUri: "https://generativelanguage.googleapis.com/v1beta/files/781kmh61cfr7" } },
+          { text: "INSTRUCCIONES Y CONTEXTO INICIAL:\n" + fullPrompt }
+        ],
+      },
+      {
+        role: "model",
+        parts: [{ text: "Entendido. Soy tu CFO experto en normativa colombiana y tengo tus facturas a la vista. ¿Cuál es tu consulta tributaria o financiera?" }],
+      },
+      ...baseGeminiHistory
+    ];
 
     let reply = "";
     let openAiDurationMs = 0;
