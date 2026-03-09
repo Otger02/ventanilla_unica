@@ -291,8 +291,9 @@ export async function POST(request: Request) {
     .from("invoices")
     .update({
       payment_status: "paid",
-      paid_at: invoice.paid_at ?? new Date().toISOString(),
+      paid_at: invoice.paid_at ?? auditResult.audit.fecha_pago ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      payment_notes: auditResult.audit.referencia ? `Referencia de pago ext: ${auditResult.audit.referencia}` : null,
     })
     .eq("id", invoiceId)
     .eq("user_id", user.id);

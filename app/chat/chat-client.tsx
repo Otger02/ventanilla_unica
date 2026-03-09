@@ -1789,7 +1789,7 @@ export function ChatClient({
                   ref={invoiceReceiptInputRef}
                   id="invoice-receipt-upload-input"
                   type="file"
-                  accept=".pdf,application/pdf"
+                  accept=".pdf,application/pdf,.png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
                   onChange={handleReceiptFileChange}
                   title="Seleccionar comprobante PDF"
                   className="hidden"
