@@ -37,6 +37,8 @@ type TaxProfileResponse = {
     monthly_payroll_cop: number;
     monthly_debt_payments_cop: number;
     municipality: string | null;
+    nombre_razon_social: string | null;
+    nit_dv: string | null;
   } | null;
 };
 
@@ -247,6 +249,8 @@ export function ChatClient({
   const [monthlyPayrollCop, setMonthlyPayrollCop] = useState("0");
   const [monthlyDebtPaymentsCop, setMonthlyDebtPaymentsCop] = useState("0");
   const [municipality, setMunicipality] = useState("");
+  const [entityName, setEntityName] = useState<string | null>(null);
+  const [entityNit, setEntityNit] = useState<string | null>(null);
   const [incomeCop, setIncomeCop] = useState("0");
   const [deductibleExpensesCop, setDeductibleExpensesCop] = useState("0");
   const [withholdingsCop, setWithholdingsCop] = useState("0");
@@ -407,6 +411,8 @@ export function ChatClient({
           setMonthlyPayrollCop(String(profileData.profile.monthly_payroll_cop ?? 0));
           setMonthlyDebtPaymentsCop(String(profileData.profile.monthly_debt_payments_cop ?? 0));
           setMunicipality(profileData.profile.municipality ?? "");
+          setEntityName(profileData.profile.nombre_razon_social ?? null);
+          setEntityNit(profileData.profile.nit_dv ?? null);
         }
 
         if (monthlyData.input) {
@@ -1246,6 +1252,17 @@ export function ChatClient({
 
   return (
     <PageShell>
+      {entityName && entityNit ? (
+        <div className="w-full mb-4 bg-zinc-50 dark:bg-zinc-800/40 p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 shadow-sm flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">{entityName}</h1>
+            <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">NIT: {entityNit}</p>
+          </div>
+          <div className="hidden sm:block text-xs uppercase tracking-widest font-semibold px-3 py-1 bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 rounded-full">
+            Perfil Activo
+          </div>
+        </div>
+      ) : null}
       <div className="w-full mb-4">
         <TaxTimeline />
       </div>

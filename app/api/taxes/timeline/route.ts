@@ -26,8 +26,8 @@ export async function GET() {
     }
 
     const nit = profile.nit;
-    const ultimoDigito = nit.slice(-1);
-    
+    const ultimoDigito = profile.nit_dv ? profile.nit_dv.slice(-1) : nit.slice(-1);
+
     const responsabilidades = [];
     if (profile.impuesto_sobre_la_renta) responsabilidades.push("Impuesto sobre la renta");
     if (profile.retencion_en_la_fuente) responsabilidades.push("Retención en la fuente");
@@ -35,6 +35,11 @@ export async function GET() {
     if (profile.responsable_de_iva) responsabilidades.push("Responsable de IVA");
     if (profile.regimen_simple) responsabilidades.push("Régimen Simple");
     if (profile.gran_contribuyente) responsabilidades.push("Gran Contribuyente");
+    
+    let esalInfo = "";
+    if (profile.es_esal) {
+      esalInfo = "\\n- ATENCIÓN TIPO DE ENTIDAD: Es una Entidad Sin Ánimo de Lucro (ESAL) / Régimen Especial.\\n- REGLA ESAL: Prioriza la 'Declaración de Ingresos y Patrimonio'. Omite el IVA si el código 49 (No responsable de IVA) está presente o no es responsable.";
+    }
 
     const geminiConfig = getGeminiConfig();
     if (!geminiConfig.hasApiKey) {
@@ -43,7 +48,7 @@ export async function GET() {
 
     const genAI = new GoogleGenerativeAI(geminiConfig.apiKey);
     const model = genAI.getGenerativeModel({ 
-      model: geminiConfig.model,
+      model: "gemini-3-flash-preview",
       generationConfig: {
         responseMimeType: "application/json",
       },
@@ -53,20 +58,24 @@ export async function GET() {
     const prompt = `Actúas como un experto en el calendario tributario de Colombia DIAN para el año 2026.
 Teniendo en cuenta que la fecha actual es ${currentDate}, necesitamos los próximos 3 plazos o vencimientos tributarios que apliquen ESPECÍFICAMENTE a este contribuyente:
 - NIT: ${nit} (Último dígito: ${ultimoDigito})
-- Responsabilidades fiscales: ${responsabilidades.join(", ")}
+- Tipo Entidad: ${profile.tipo_entidad || "Ordinaria"}
+- Actividad: ${profile.actividad_economica || "No especificada"}
+- Responsabilidades fiscales: ${responsabilidades.join(", ")}${esalInfo}
 
 Instrucciones:
-1. Revisa las reglas generales de vencimientos en Colombia (IVA, Retefuente, Renta) para 2026 según el último dígito del NIT (${ultimoDigito}).
+1. Revisa las reglas generales de vencimientos en Colombia (IVA, Retefuente, Renta/Ingresos y Patrimonio) para 2026 según el último dígito del NIT (${ultimoDigito}).
 2. Descarta las responsabilidades que este NIT NO tenga.
 3. Devuelve los próximos 3 eventos exactamente a partir de ${currentDate} en formato JSON.
 
-Estructura estricta:
+Estructura estricta para cada evento:
 [
   {
-    "title": "Nombre de la obligación (ej. Declaración de IVA Bimestral)",
+    "title": "Nombre oficial de la obligación (ej. Declaración de IVA)",
     "dueDate": "YYYY-MM-DD",
-    "description": "Breve explicación u obligación aplicable al dígito ${ultimoDigito}"
-  }
+    "description": "Breve explicación u obligación aplicable al dígito ${ultimoDigito}",
+    "traduccion_humana": "Una frase corta que explique qué es ese impuesto sin tecnicismos.",
+    "pasos_a_seguir": ["Paso 1", "Paso 2", "Paso 3"],
+    "link_accion": "URL recomendada de la DIAN o acción"
 ]`;
 
     // Optionally pass the calendar file if we have it uploaded, or just rely on model knowledge for MVP

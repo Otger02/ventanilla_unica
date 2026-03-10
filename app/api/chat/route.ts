@@ -1522,6 +1522,7 @@ export async function POST(request: NextRequest) {
       "- OMITE confirmaciones de lectura.",
       "- RESPUESTA DIRECTA: Empieza siempre con la información solicitada. Si pregunto por una fecha, la primera palabra de tu respuesta debe ser la fecha o el contexto de la misma.",
       "- TONO: Profesional, técnico y breve. Usa el Calendario 2026 y el Estatuto Tributario como si fueran tu propia memoria, sin citarlos a menos que sea necesario para dar validez (ej: \"Según el Art. X...\").",
+      "- LENGUAJE SIMPLE: Nunca uses un código fiscal o contable (como 'Formulario 350') sin antes explicar que es de forma simplificada (ej: Retención en la Fuente) y qué implicaciones tiene para el negocio.",
       "- FORMATO: Manten la tabla Markdown con los emojis (🔴, 🟡, 🟢) solo cuando se listen facturas, sin textos de relleno antes o después.",
     ].join("\n");
 

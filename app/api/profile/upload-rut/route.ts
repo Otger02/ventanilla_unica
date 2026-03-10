@@ -44,14 +44,19 @@ export async function POST(request: Request) {
   const prompt = [
     "Eres un asistente tributario experto en Colombia.",
     "Extrae del siguiente RUT los datos solicitados:",
-    "- NIT (Casilla 5)",
-    "- Nombre o Razón Social (Casilla 35 o equivalente para personas naturales)",
+    "- NIT completo incluyendo guión y dígito de verificación (Ej: 901918043-6) (Casilla 5 y 6)",
+    "- Nombre o Razón Social completa tal y como aparece en la Casilla 35 o equivalente.",
     "- Todos los códigos numéricos de la Casilla 53 (Responsabilidades, Calidades y Atributos).",
+    "- Actividad Económica Principal (Código CIIU, Casilla 46).",
+    "- Tipo de Entidad: Identifica si es 'Entidad Sin Ánimo de Lucro' (ESAL), 'Régimen Especial', 'Sociedad Comercial', 'Persona Natural', etc.",
     "Devuélvelo estrictamente en JSON con este esquema:",
     `{
-      "nit": "string (solo numeros)",
+      "nit_con_dv": "string (con el guion, ej: 901918043-6)",
+      "nit_solo_numeros": "string (solo numeros para busquedas)",
       "nombre_razon_social": "string",
-      "codigos_responsabilidades": ["string", "string"]
+      "codigos_responsabilidades": ["string", "string"],
+      "actividad_economica_ciiu": "string",
+      "tipo_entidad": "string"
     }`
   ].join("\\n");
 
@@ -80,9 +85,12 @@ export async function POST(request: Request) {
       parsed = JSON.parse(clean);
     }
 
-    const { nit, nombre_razon_social, codigos_responsabilidades } = parsed;
+    const { nit_con_dv, nit_solo_numeros, nombre_razon_social, codigos_responsabilidades, actividad_economica_ciiu, tipo_entidad } = parsed;
 
-    if (!nit || !nombre_razon_social) {
+    // Aceptar cualquier forma de NIT
+    const extractedNit = nit_solo_numeros || nit_con_dv?.split('-')[0] || parsed.nit;
+
+    if (!extractedNit || !nombre_razon_social) {
       return NextResponse.json({ error: "No se pudo extraer el NIT o el Nombre del RUT." }, { status: 400 });
     }
 
@@ -90,8 +98,12 @@ export async function POST(request: Request) {
 
     const mappedData = {
       user_id: user.id,
-      nit,
+      nit: extractedNit,
+      nit_dv: nit_con_dv,
       nombre_razon_social,
+      actividad_economica: actividad_economica_ciiu,
+      tipo_entidad,
+      es_esal: tipo_entidad?.toLowerCase().includes("sin ánimo de lucro") || tipo_entidad?.toLowerCase().includes("régimen especial") || codes.includes("04"),
       impuesto_sobre_la_renta: codes.includes("05"),
       retencion_en_la_fuente: codes.includes("07"),
       autorretenedor: codes.includes("15"),

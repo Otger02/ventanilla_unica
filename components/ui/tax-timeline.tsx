@@ -7,6 +7,9 @@ type TaxEvent = {
   title: string;
   dueDate: string;
   description: string;
+  traduccion_humana?: string;
+  pasos_a_seguir?: string[];
+  link_accion?: string;
 };
 
 export function TaxTimeline() {
@@ -95,6 +98,21 @@ export function TaxTimeline() {
                   <span className="font-medium bg-black/10 px-2 py-0.5 rounded-full">{ev.dueDate}</span>
                   <span className="line-clamp-1">{ev.description}</span>
                 </div>
+                {ev.traduccion_humana && (
+                  <p className="mt-2 text-sm italic opacity-90 border-l-2 border-black/20 pl-2">"{ev.traduccion_humana}"</p>
+                )}
+                {ev.pasos_a_seguir && ev.pasos_a_seguir.length > 0 && (
+                  <ul className="mt-2 text-xs list-disc list-inside pl-4 opacity-80 space-y-1">
+                    {ev.pasos_a_seguir.map((paso, i) => (
+                      <li key={i}>{paso}</li>
+                    ))}
+                  </ul>
+                )}
+                {ev.link_accion && (
+                  <a href={ev.link_accion} target="_blank" rel="noreferrer" className="inline-block mt-3 text-xs font-semibold underline opacity-90 hover:opacity-100">
+                    → Ver más detalles o pagar
+                  </a>
+                )}
               </div>
             </div>
           ))}
