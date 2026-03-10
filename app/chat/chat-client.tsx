@@ -435,6 +435,9 @@ export function ChatClient({
       }
     }
 
+    async function loadProfile() { const supabase = createBrowserSupabaseClient(); const { data: { session } } = await supabase.auth.getSession(); if (session?.user) { const { data } = await supabase.from("profiles").select("nombre_razon_social, nit").eq("user_id", session.user.id).single(); if (data) { setEntityName(data.nombre_razon_social || "Usuario"); setEntityNit(data.nit || "000000000-0"); } } }
+
+    void loadProfile();
     void loadEstimate();
     void loadTaxData();
     void loadHistory(historyMonths);
