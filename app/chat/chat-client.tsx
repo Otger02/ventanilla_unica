@@ -39,6 +39,7 @@ type TaxProfileResponse = {
     municipality: string | null;
     nombre_razon_social: string | null;
     nit_dv: string | null;
+    es_esal: boolean | null;
   } | null;
 };
 
@@ -251,6 +252,7 @@ export function ChatClient({
   const [municipality, setMunicipality] = useState("");
   const [entityName, setEntityName] = useState<string | null>(null);
   const [entityNit, setEntityNit] = useState<string | null>(null);
+  const [isEsal, setIsEsal] = useState<boolean | null>(null);
   const [incomeCop, setIncomeCop] = useState("0");
   const [deductibleExpensesCop, setDeductibleExpensesCop] = useState("0");
   const [withholdingsCop, setWithholdingsCop] = useState("0");
@@ -276,6 +278,7 @@ export function ChatClient({
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
+  const [isDragging, setIsDragging] = useState(false);
   const invoiceInputRef = useRef<HTMLInputElement | null>(null);
   const invoiceReceiptInputRef = useRef<HTMLInputElement | null>(null);
   const rutInputRef = useRef<HTMLInputElement | null>(null);
@@ -413,6 +416,7 @@ export function ChatClient({
           setMunicipality(profileData.profile.municipality ?? "");
           setEntityName(profileData.profile.nombre_razon_social ?? null);
           setEntityNit(profileData.profile.nit_dv ?? null);
+          setIsEsal(profileData.profile.es_esal ?? null);
         }
 
         if (monthlyData.input) {
@@ -1249,6 +1253,36 @@ export function ChatClient({
       setIsLoadingReceipts(false);
     }
   }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Use target validation to avoid flickering
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (file && (file.type === "application/pdf" || file.type.startsWith("image/"))) {
+      void handleInvoiceUpload(file);
+    }
+  };
 
   return (
     <PageShell>

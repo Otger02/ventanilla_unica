@@ -47,6 +47,7 @@ type TaxProfileRow = {
   start_date: string | null;
   nombre_razon_social: string | null;
   nit_dv: string | null;
+  es_esal: boolean | null;
 };
 
 type TaxProfilePayload = {
@@ -227,7 +228,7 @@ export async function GET() {
     const { data, error } = await supabase
       .from("user_tax_profile_co")
       .select(
-        "user_id, created_at, updated_at, persona_type, activity_type, regimen, vat_responsible, provision_style, taxpayer_type, legal_type, vat_periodicity, monthly_fixed_costs_cop, monthly_payroll_cop, monthly_debt_payments_cop, municipality, start_date, nombre_razon_social, nit_dv",
+        "user_id, created_at, updated_at, persona_type, activity_type, regimen, vat_responsible, provision_style, taxpayer_type, legal_type, vat_periodicity, monthly_fixed_costs_cop, monthly_payroll_cop, monthly_debt_payments_cop, municipality, start_date, nombre_razon_social, nit_dv, es_esal",
       )
       .eq("user_id", user.id)
       .maybeSingle();
@@ -276,7 +277,7 @@ export async function POST(request: Request) {
         { onConflict: "user_id" },
       )
       .select(
-        "user_id, created_at, updated_at, persona_type, activity_type, regimen, vat_responsible, provision_style, taxpayer_type, legal_type, vat_periodicity, monthly_fixed_costs_cop, monthly_payroll_cop, monthly_debt_payments_cop, municipality, start_date, nombre_razon_social, nit_dv",
+        "user_id, created_at, updated_at, persona_type, activity_type, regimen, vat_responsible, provision_style, taxpayer_type, legal_type, vat_periodicity, monthly_fixed_costs_cop, monthly_payroll_cop, monthly_debt_payments_cop, municipality, start_date, nombre_razon_social, nit_dv, es_esal",
       )
       .single();
 
