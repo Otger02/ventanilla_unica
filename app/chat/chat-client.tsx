@@ -2,7 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, CheckCircle } from "lucide-react";
+import Link from "next/link";
+import { FileText, CheckCircle, BarChart3 } from "lucide-react";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
@@ -1304,6 +1305,11 @@ export function ChatClient({
           )}
         </div>
         <div className="flex gap-3 items-center">
+          <Link href="/dashboard">
+            <Button variant="outline" size="sm" className="hidden md:flex gap-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800">
+              <BarChart3 className="w-4 h-4" /> Dashboard
+            </Button>
+          </Link>
           <div className="hidden sm:inline-flex items-center justify-center px-3 py-1 text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 rounded-full border border-emerald-200 dark:border-emerald-800">
             <CheckCircle className="w-3.5 h-3.5 mr-1" /> Perfil Activo
           </div>
