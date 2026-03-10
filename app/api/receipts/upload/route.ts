@@ -25,6 +25,7 @@ type AuditResult = {
   monto_pagado: number | null;
   fecha_pago: string | null;
   referencia: string | null;
+  detected_amount: number | null;
 };
 
 function sanitizeFileName(name: string) {
@@ -90,6 +91,9 @@ function parseAuditResult(raw: string): AuditResult | null {
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     reason: typeof parsed.reason === "string" ? parsed.reason.trim() : "Sin razón provista por auditor IA.",
     detected_amount: Number.isFinite(detectedAmount ?? NaN) ? Math.round(detectedAmount as number) : null,
+    monto_pagado: typeof parsed.monto_pagado === "number" ? parsed.monto_pagado : null,
+    fecha_pago: typeof parsed.fecha_pago === "string" ? parsed.fecha_pago : null,
+    referencia: typeof parsed.referencia === "string" ? parsed.referencia : null,
   };
 }
 
@@ -193,7 +197,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Factura no encontrada." }, { status: 404 });
   }
 
-  const formData = await request.formData();
   const file = formData.get("file");
 
   if (!(file instanceof File)) {

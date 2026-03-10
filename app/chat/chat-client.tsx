@@ -12,6 +12,7 @@ import { Field } from "@/components/ui/field";
 import { PageShell } from "@/components/ui/page-shell";
 import { SectionCard } from "@/components/ui/section-card";
 import { Tabs } from "@/components/ui/tabs";
+import { TaxTimeline } from "@/components/ui/tax-timeline";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -273,6 +274,8 @@ export function ChatClient({
   const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
   const invoiceInputRef = useRef<HTMLInputElement | null>(null);
   const invoiceReceiptInputRef = useRef<HTMLInputElement | null>(null);
+  const rutInputRef = useRef<HTMLInputElement | null>(null);
+  const [isUploadingRut, setIsUploadingRut] = useState(false);
   const pendingReceiptInvoiceIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -1171,6 +1174,53 @@ export function ChatClient({
     event.target.value = "";
   }
 
+  function handleRutClick() {
+    if (demoMode || isUploadingRut) return;
+    rutInputRef.current?.click();
+  }
+
+  async function handleRutFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      if (rutInputRef.current) {
+         rutInputRef.current.value = "";
+      }
+      return;
+    }
+
+    setIsUploadingRut(true);
+    setTaxError(null);
+    setTaxSuccess(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/profile/upload-rut", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Error al subir el RUT.");
+      }
+
+      setTaxSuccess("¡RUT procesado! Tu perfil fiscal ha sido configurado correctamente.");
+      setTimeout(() => {
+        window.location.reload();
+      }, 1500);
+    } catch (e) {
+      setTaxError(e instanceof Error ? e.message : "Error desconocido al procesar RUT.");
+    } finally {
+      setIsUploadingRut(false);
+      event.target.value = "";
+      if (rutInputRef.current) {
+        rutInputRef.current.value = "";
+      }
+    }
+  }
+
   async function loadInvoiceReceipts(invoice: InvoiceItem) {
     setReceiptsInvoice(invoice);
     setIsLoadingReceipts(true);
@@ -1196,6 +1246,9 @@ export function ChatClient({
 
   return (
     <PageShell>
+      <div className="w-full mb-4">
+        <TaxTimeline />
+      </div>
       <div className="flex min-h-screen w-full flex-col gap-4 lg:flex-row">
       <div className="mb-1 lg:hidden">
         <Tabs
@@ -1507,6 +1560,28 @@ export function ChatClient({
           description="Configuración base de contribuyente, régimen y estilo de provisión."
           className="mt-4"
         >
+          <div className="mb-4">
+            <input
+              ref={rutInputRef}
+              type="file"
+              accept=".pdf,application/pdf,image/*"
+              onChange={handleRutFileChange}
+              className="hidden"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full justify-center"
+              onClick={handleRutClick}
+              disabled={isUploadingRut}
+            >
+              {isUploadingRut ? "Procesando RUT..." : "Configurar mi perfil con el RUT"}
+            </Button>
+            <p className="text-xs text-zinc-500 mt-2">
+              Sube el PDF de tu RUT para extraer automáticamente tus responsabilidades (casilla 53) y configurar tu perfil fiscal.
+            </p>
+          </div>
 
           <Field label="Regimen" hint="Configura tu régimen fiscal actual.">
             <select

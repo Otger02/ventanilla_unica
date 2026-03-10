@@ -1327,8 +1327,33 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    let taxProfileData = "";
+    if (authenticatedUserId) {
+      const { data: profileRow } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("user_id", authenticatedUserId)
+        .maybeSingle();
+
+      if (profileRow && profileRow.nit) {
+        const ultimoDigito = profileRow.nit.slice(-1);
+        const responsabilidades = [];
+        if (profileRow.impuesto_sobre_la_renta) responsabilidades.push("Impuesto sobre la renta");
+        if (profileRow.retencion_en_la_fuente) responsabilidades.push("Retención en la fuente");
+        if (profileRow.autorretenedor) responsabilidades.push("Autorretenedor");
+        if (profileRow.responsable_de_iva) responsabilidades.push("Responsable de IVA");
+        if (profileRow.regimen_simple) responsabilidades.push("Régimen Simple");
+        if (profileRow.gran_contribuyente) responsabilidades.push("Gran Contribuyente");
+        
+        taxProfileData = "El usuario actual tiene el NIT " + profileRow.nit + 
+          " (Último dígito: " + ultimoDigito + ") y tiene estas responsabilidades: [" + 
+          responsabilidades.join(", ") + "]. Cuando consultes el Calendario 2026, ignora todo lo que no aplique a su último dígito o sus responsabilidades.";
+      }
+    }
+
     const promptSections = [
       `Contexto de conversacion (ultimos 10 mensajes):\n${contextLines.join("\n")}`,
+      taxProfileData ? `CONTEXTO_PERFIL_USUARIO:\n${taxProfileData}` : "",
       "FINANCIAL_CONTEXT:\n" + JSON.stringify(financialContextPayload, null, 2),
       [
         "INSTRUCCION_FINANCIAL_CONTEXT:",
