@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-const content = fs.readFileSync('app/chat/chat-client.tsx', 'utf8');
+const content = fs.readFileSync('old_chat.tsx', 'utf8');
 
 const returnMatch = /  return \([\s\S]*?<PageShell>/m.exec(content);
 if (!returnMatch) {
@@ -11,14 +11,25 @@ const returnStart = returnMatch.index;
 
 const beforeReturn = content.substring(0, returnStart);
 
-const sectionProfile = content.substring(content.indexOf('<SectionCard\n          title="Perfil fiscal"'), content.indexOf('</SectionCard>', content.indexOf('<SectionCard\n          title="Perfil fiscal"')) + 14);
+// We need to match SectionCards accurately
+// Section 1: Perfil fiscal
+let pStart = content.indexOf('title="Perfil fiscal"');
+let pSectionStart = content.lastIndexOf('<SectionCard', pStart);
+let pSectionEnd = content.indexOf('</SectionCard>', pStart) + '</SectionCard>'.length;
+const sectionProfile = content.substring(pSectionStart, pSectionEnd);
 
-const sectionMensual = content.substring(content.indexOf('<SectionCard\n          title="Operación Mensual Estimada"'), content.indexOf('</SectionCard>', content.indexOf('<SectionCard\n          title="Operación Mensual Estimada"')) + 14);
+// Section 2: Operación Mensual Estimada
+let mStart = content.indexOf('title="Operación Mensual Estimada"');
+let mSectionStart = content.lastIndexOf('<SectionCard', mStart);
+let mSectionEnd = content.indexOf('</SectionCard>', mStart) + '</SectionCard>'.length;
+const sectionMensual = content.substring(mSectionStart, mSectionEnd);
 
-const sectionFacturasStart = content.indexOf('<SectionCard\n          title="Facturas"');
-const sectionFacturasInnerStart = content.indexOf('>', sectionFacturasStart) + 1;
-const sectionFacturasInnerEnd = content.indexOf('</SectionCard>', sectionFacturasStart);
-let facturasInnerContent = content.substring(sectionFacturasInnerStart, sectionFacturasInnerEnd);
+// Section 3: Facturas
+let fStart = content.indexOf('title="Facturas"');
+let fSectionStart = content.lastIndexOf('<SectionCard', fStart);
+let fSectionInnerStart = content.indexOf('>', fSectionStart) + 1;
+let fSectionEnd = content.indexOf('</SectionCard>', fStart);
+let facturasInnerContent = content.substring(fSectionInnerStart, fSectionEnd);
 
 facturasInnerContent = facturasInnerContent.replace('{demoMode ? (', '{/* DEMO MODE CHECKS */}\n{demoMode ? (');
 
@@ -43,7 +54,7 @@ const chatContent = content.substring(chatStart, chatEnd);
 
 // Rewrite the whole return 
 const newReturn = `  return (
-    <PageShell className="h-[100dvh] flex flex-col overflow-hidden px-0 py-0 sm:px-0 max-w-none">
+    <PageShell className="!h-[100dvh] flex flex-col overflow-hidden !px-0 !py-0 sm:!px-0 !max-w-none">
       {/* Header de Identidad (Top Bar) */}
       <div className="flex-none bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 px-4 md:px-6 py-3 flex items-center justify-between z-50 shadow-sm relative">
         <div>
@@ -190,18 +201,18 @@ const newReturn = `  return (
             </div>
 
             <div className="mt-8 border-t border-zinc-200 dark:border-zinc-800 pt-6">
-               <details className="group">
-                 <summary className="font-semibold text-[14px] cursor-pointer list-none flex items-center justify-between bg-zinc-100 dark:bg-zinc-800/50 hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
-                   Configuración Fiscal & Estimación
+               <details className="group border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-sm bg-white dark:bg-zinc-900 overflow-hidden">
+                 <summary className="font-semibold text-[14px] cursor-pointer list-none flex items-center justify-between bg-zinc-50 dark:bg-zinc-800/80 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors px-5 py-4">
+                   Ficha Fiscal & Estimación
                    <span className="transition duration-300 group-open:-rotate-180">
-                     <svg fill="none" height="20" shape-rendering="geometricPrecision" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" viewBox="0 0 24 24" width="20"><path d="M6 9l6 6 6-6"></path></svg>
+                     <svg fill="none" height="20" shape-rendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="20"><path d="M6 9l6 6 6-6"></path></svg>
                    </span>
                  </summary>
-                 <div className="mt-4 space-y-4 px-1">
-                    <div className="mb-4">
+                 <div className="p-5 border-t border-zinc-200 dark:border-zinc-800 space-y-6">
+                    <div>
                        <h3 className="text-[14px] font-semibold text-zinc-800 dark:text-zinc-200 mb-3">Provisión estimada al cierre de mes</h3>
                        {!isLoadingEstimate && estimate ? (
-                          <div className="space-y-2.5 text-[14px] bg-white dark:bg-zinc-900 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
+                          <div className="space-y-2.5 text-[14px] bg-zinc-50/50 dark:bg-zinc-950/50 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
                             <div className="flex items-center justify-between">
                               <span className="text-zinc-600 dark:text-zinc-400">Total provisión</span>
                               <span className="font-semibold">{formatCop(estimate.totalProvision)}</span>
@@ -214,7 +225,7 @@ const newReturn = `  return (
                               <span className="text-zinc-500">Renta</span>
                               <span>{formatCop(estimate.rentaProvision)}</span>
                             </div>
-                            <div className="h-px w-full bg-zinc-100 dark:bg-zinc-800 my-2"></div>
+                            <div className="h-px w-full bg-zinc-200 dark:bg-zinc-800 my-2"></div>
                             <div className="flex items-center justify-between font-semibold">
                               <span>Caja post-provisión</span>
                               <span className={estimate.cashAfterProvision < 0 ? "text-red-500" : "text-emerald-600 dark:text-emerald-400"}>{formatCop(estimate.cashAfterProvision)}</span>
@@ -244,4 +255,4 @@ const newReturn = `  return (
 `;
 
 fs.writeFileSync('app/chat/chat-client.tsx', beforeReturn + newReturn);
-console.log("Done patching chat-client.tsx");
+console.log("Done carefully patching chat-client.tsx from old_chat.tsx");

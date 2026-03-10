@@ -1,0 +1,1284 @@
+mport { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { FileText, CheckCircle } from "lucide-react";
+
+import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { ChatBubble } from "@/components/ui/chat-bubble";
+import { Field } from "@/components/ui/field";
+import { PageShell } from "@/components/ui/page-shell";
+import { SectionCard } from "@/components/ui/section-card";
+import { Tabs } from "@/components/ui/tabs";
+import { TaxTimeline } from "@/components/ui/tax-timeline";
+
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type ChatClientProps = {
+  demoMode: boolean;
+  showDemoDebug: boolean;
+  demoModeRawEnv: string;
+};
+
+type TaxProfileResponse = {
+  profile: {
+    regimen: "simple" | "ordinario" | "unknown";
+    vat_responsible: "yes" | "no" | "unknown";
+    provision_style: "conservative" | "balanced" | "aggressive";
+    taxpayer_type: "natural" | "juridica" | "unknown";
+    legal_type: "sas" | "ltda" | "other" | "unknown";
+    vat_periodicity: "bimestral" | "cuatrimestral" | "anual" | "unknown";
+    monthly_fixed_costs_cop: number;
+    monthly_payroll_cop: number;
+    monthly_debt_payments_cop: number;
+    municipality: string | null;
+    nombre_razon_social: string | null;
+    nit_dv: string | null;
+    es_esal: boolean | null;
+  } | null;
+};
+
+type MonthlyInputResponse = {
+  input: {
+    year: number;
+    month: number;
+    income_cop: number;
+    deductible_expenses_cop: number;
+    withholdings_cop: number;
+    vat_collected_cop: number;
+  } | null;
+};
+
+type TaxEstimateResponse = {
+  breakdown: {
+    totalProvision: number;
+    rentaProvision: number;
+    ivaProvision: number;
+    cashAfterProvision: number;
+    riskLevel: "high" | "medium" | "low";
+  };
+};
+
+type TaxHistoryItem = {
+  year: number;
+  month: number;
+  income_cop: number;
+  deductible_expenses_cop: number;
+  totalProvision: number;
+  cashAfterProvision: number;
+  riskLevel: "high" | "medium" | "low";
+};
+
+type TaxHistoryResponse = {
+  items: TaxHistoryItem[];
+};
+
+type InvoiceItem = {
+  id: string;
+  created_at: string;
+  status: "pending" | "scheduled" | "paid" | "disputed";
+  payment_status: "unpaid" | "scheduled" | "paid";
+  total_cop: number | null;
+  supplier_name: string | null;
+  due_date: string | null;
+  scheduled_payment_date: string | null;
+  paid_at: string | null;
+  payment_method: "transfer" | "pse" | "cash" | "other" | null;
+  payment_notes: string | null;
+  payment_url: string | null;
+  supplier_portal_url: string | null;
+  last_payment_opened_at: string | null;
+  receipts_count: number;
+  filename: string | null;
+  size_bytes: number | null;
+  extracted_at: string | null;
+  extraction_confidence: Record<string, unknown> | null;
+  extraction_raw: {
+    status?: string;
+    [key: string]: unknown;
+  } | null;
+};
+
+type InvoicesResponse = {
+  invoices: InvoiceItem[];
+};
+
+type InvoiceReceiptItem = {
+  id: string;
+  original_filename: string | null;
+  created_at: string;
+};
+
+type InvoiceReceiptsResponse = {
+  receipts: InvoiceReceiptItem[];
+};
+
+const exampleQuestions = [
+  "¿Cuánto debo provisionar para impuestos este mes?",
+  "¿Qué gastos puedo deducir como independiente?",
+  "¿Estoy listo para contratar a alguien?",
+  "¿Qué debo tener al día con la DIAN?",
+  "¿Cómo organizo mis finanzas este mes?",
+  "¿Qué documentos debería guardar?",
+];
+
+function formatAssistantMarkdown(raw: string): string {
+  const lines = raw.replace(/\r\n/g, "\n").trim().split("\n");
+  const normalizedLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    const headingMatch = trimmedLine.match(/^(?:\((\d)\)|(\d)\))\s*(.+)$/);
+
+    if (headingMatch) {
+      const number = headingMatch[1] || headingMatch[2];
+      const headingContent = headingMatch[3].trim();
+      let headingTitle = headingContent;
+      let headingBody: string | null = null;
+
+      if (headingContent.includes(": - ")) {
+        const [titlePart, bodyPart] = headingContent.split(": - ", 2);
+        headingTitle = titlePart.trim();
+        headingBody = `- ${bodyPart.trim()}`;
+      } else if (headingContent.includes(": ")) {
+        const [titlePart, bodyPart] = headingContent.split(": ", 2);
+        headingTitle = titlePart.trim();
+        headingBody = bodyPart.trim();
+      }
+
+      headingTitle = headingTitle.replace(/:\s*$/, "").trim();
+
+      if (normalizedLines.length > 0 && normalizedLines[normalizedLines.length - 1] !== "") {
+        normalizedLines.push("");
+      }
+
+      normalizedLines.push(`## (${number}) ${headingTitle}`);
+
+      if (headingBody) {
+        if (headingBody.includes(" - ")) {
+          headingBody
+            .split(" - ")
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .forEach((item) => normalizedLines.push(`- ${item.replace(/^-\s*/, "")}`));
+        } else {
+          normalizedLines.push(headingBody);
+        }
+      }
+
+      continue;
+    }
+
+    if (trimmedLine.includes(": - ")) {
+      const [prefix, suffix] = trimmedLine.split(": - ", 2);
+      const items = suffix
+        .split(" - ")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      normalizedLines.push(`${prefix}:`);
+      items.forEach((item) => normalizedLines.push(`- ${item}`));
+      continue;
+    }
+
+    const previousLine = normalizedLines[normalizedLines.length - 1] ?? "";
+    if (previousLine.startsWith("## ") && trimmedLine.includes(" - ") && !trimmedLine.startsWith("-")) {
+      const items = trimmedLine
+        .split(" - ")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      items.forEach((item) => normalizedLines.push(`- ${item}`));
+      continue;
+    }
+
+    normalizedLines.push(trimmedLine);
+  }
+
+  let formatted = normalizedLines.join("\n");
+  formatted = formatted.replace(/\n{3,}/g, "\n\n");
+
+  return formatted.trim();
+}
+
+export function ChatClient({
+  demoMode,
+  showDemoDebug,
+  demoModeRawEnv,
+}: ChatClientProps) {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
+  const router = useRouter();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isLoadingTaxData, setIsLoadingTaxData] = useState(true);
+  const [isSavingTaxData, setIsSavingTaxData] = useState(false);
+  const [taxError, setTaxError] = useState<string | null>(null);
+  const [taxSuccess, setTaxSuccess] = useState<string | null>(null);
+  const [isLoadingEstimate, setIsLoadingEstimate] = useState(true);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<TaxEstimateResponse["breakdown"] | null>(null);
+  const [historyMonths, setHistoryMonths] = useState<6 | 12>(6);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyItems, setHistoryItems] = useState<TaxHistoryItem[]>([]);
+  const [regimen, setRegimen] = useState<"simple" | "ordinario" | "unknown">("unknown");
+  const [vatResponsible, setVatResponsible] = useState<"yes" | "no" | "unknown">("unknown");
+  const [provisionStyle, setProvisionStyle] = useState<
+    "conservative" | "balanced" | "aggressive"
+  >("balanced");
+  const [taxpayerType, setTaxpayerType] = useState<"natural" | "juridica" | "unknown">(
+    "unknown",
+  );
+  const [legalType, setLegalType] = useState<"sas" | "ltda" | "other" | "unknown">(
+    "unknown",
+  );
+  const [vatPeriodicity, setVatPeriodicity] = useState<
+    "bimestral" | "cuatrimestral" | "anual" | "unknown"
+  >("unknown");
+  const [monthlyFixedCostsCop, setMonthlyFixedCostsCop] = useState("0");
+  const [monthlyPayrollCop, setMonthlyPayrollCop] = useState("0");
+  const [monthlyDebtPaymentsCop, setMonthlyDebtPaymentsCop] = useState("0");
+  const [municipality, setMunicipality] = useState("");
+  const [entityName, setEntityName] = useState<string | null>(null);
+  const [entityNit, setEntityNit] = useState<string | null>(null);
+  const [isEsal, setIsEsal] = useState<boolean | null>(null);
+  const [incomeCop, setIncomeCop] = useState("0");
+  const [deductibleExpensesCop, setDeductibleExpensesCop] = useState("0");
+  const [withholdingsCop, setWithholdingsCop] = useState("0");
+  const [vatCollectedCop, setVatCollectedCop] = useState("0");
+  const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
+  const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
+  const [isUploadingInvoice, setIsUploadingInvoice] = useState(false);
+  const [processingInvoiceId, setProcessingInvoiceId] = useState<string | null>(null);
+  const [updatingPaymentInvoiceId, setUpdatingPaymentInvoiceId] = useState<string | null>(null);
+  const [invoiceProcessStatus, setInvoiceProcessStatus] = useState<Record<string, "processed" | "needs_ocr" | "error">>({});
+  const [detailsInvoice, setDetailsInvoice] = useState<InvoiceItem | null>(null);
+  const [scheduleInvoice, setScheduleInvoice] = useState<InvoiceItem | null>(null);
+  const [schedulePaymentDate, setSchedulePaymentDate] = useState("");
+  const [schedulePaymentMethod, setSchedulePaymentMethod] = useState<"transfer" | "pse" | "cash" | "other">("transfer");
+  const [schedulePaymentNotes, setSchedulePaymentNotes] = useState("");
+  const [payLinkInvoice, setPayLinkInvoice] = useState<InvoiceItem | null>(null);
+  const [payLinkPaymentUrl, setPayLinkPaymentUrl] = useState("");
+  const [payLinkSupplierPortalUrl, setPayLinkSupplierPortalUrl] = useState("");
+  const [receiptsInvoice, setReceiptsInvoice] = useState<InvoiceItem | null>(null);
+  const [invoiceReceipts, setInvoiceReceipts] = useState<InvoiceReceiptItem[]>([]);
+  const [isLoadingReceipts, setIsLoadingReceipts] = useState(false);
+  const [uploadingReceiptInvoiceId, setUploadingReceiptInvoiceId] = useState<string | null>(null);
+  const [invoicesError, setInvoicesError] = useState<string | null>(null);
+  const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
+  const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
+  const [isDragging, setIsDragging] = useState(false);
+  const invoiceInputRef = useRef<HTMLInputElement | null>(null);
+  const invoiceReceiptInputRef = useRef<HTMLInputElement | null>(null);
+  const rutInputRef = useRef<HTMLInputElement | null>(null);
+  const [isUploadingRut, setIsUploadingRut] = useState(false);
+  const pendingReceiptInvoiceIdRef = useRef<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isSending]);
+
+  async function loadHistory(months: 6 | 12) {
+    setIsLoadingHistory(true);
+    setHistoryError(null);
+
+    try {
+      const response = await fetch(`/api/taxes/history?months=${months}`, { method: "GET" });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const errorMessage =
+          (data as { error?: string }).error || "No se pudo cargar el histórico.";
+        throw new Error(errorMessage);
+      }
+
+      const parsed = data as TaxHistoryResponse;
+      setHistoryItems(parsed.items ?? []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo cargar el histórico.";
+      setHistoryItems([]);
+      setHistoryError(message);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }
+
+  const loadInvoices = useCallback(async () => {
+    if (demoMode) {
+      setInvoices([]);
+      setInvoicesError(null);
+      return;
+    }
+
+    setIsLoadingInvoices(true);
+    setInvoicesError(null);
+
+    try {
+      const response = await fetch("/api/invoices", { method: "GET" });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error("Inicia sesión para ver facturas.");
+        }
+        throw new Error((data as { error?: string }).error || "No se pudieron cargar facturas.");
+      }
+
+      const parsed = data as InvoicesResponse;
+      setInvoices(parsed.invoices ?? []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudieron cargar facturas.";
+      setInvoices([]);
+      setInvoicesError(message);
+    } finally {
+      setIsLoadingInvoices(false);
+    }
+  }, [demoMode]);
+
+  useEffect(() => {
+    async function loadEstimate() {
+      setIsLoadingEstimate(true);
+      setEstimateError(null);
+
+      try {
+        const response = await fetch("/api/taxes/estimate", { method: "GET" });
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok) {
+          const estimateData = data as TaxEstimateResponse;
+          setEstimate(estimateData.breakdown);
+          return;
+        }
+
+        if (response.status === 400) {
+          setEstimate(null);
+          setEstimateError("Completa tus datos del mes para calcular.");
+          return;
+        }
+
+        setEstimate(null);
+        setEstimateError("No se pudo cargar la provisión estimada.");
+      } catch {
+        setEstimate(null);
+        setEstimateError("No se pudo cargar la provisión estimada.");
+      } finally {
+        setIsLoadingEstimate(false);
+      }
+    }
+
+    async function loadTaxData() {
+      setIsLoadingTaxData(true);
+      setTaxError(null);
+
+      try {
+        const [profileResponse, monthlyInputResponse] = await Promise.all([
+          fetch("/api/profile/tax-co", { method: "GET" }),
+          fetch(`/api/taxes/monthly-input?year=${currentYear}&month=${currentMonth}`, {
+            method: "GET",
+          }),
+        ]);
+
+        if (!profileResponse.ok) {
+          const profileError = await profileResponse.json().catch(() => ({}));
+          throw new Error(profileError.error || "No se pudo cargar el perfil fiscal.");
+        }
+
+        if (!monthlyInputResponse.ok) {
+          const monthlyError = await monthlyInputResponse.json().catch(() => ({}));
+          throw new Error(monthlyError.error || "No se pudo cargar el resumen mensual.");
+        }
+
+        const profileData = (await profileResponse.json()) as TaxProfileResponse;
+        const monthlyData = (await monthlyInputResponse.json()) as MonthlyInputResponse;
+
+        if (profileData.profile) {
+          setRegimen(profileData.profile.regimen ?? "unknown");
+          setVatResponsible(profileData.profile.vat_responsible ?? "unknown");
+          setProvisionStyle(profileData.profile.provision_style ?? "balanced");
+          setTaxpayerType(profileData.profile.taxpayer_type ?? "unknown");
+          setLegalType(profileData.profile.legal_type ?? "unknown");
+          setVatPeriodicity(profileData.profile.vat_periodicity ?? "unknown");
+          setMonthlyFixedCostsCop(String(profileData.profile.monthly_fixed_costs_cop ?? 0));
+          setMonthlyPayrollCop(String(profileData.profile.monthly_payroll_cop ?? 0));
+          setMonthlyDebtPaymentsCop(String(profileData.profile.monthly_debt_payments_cop ?? 0));
+          setMunicipality(profileData.profile.municipality ?? "");
+          setEntityName(profileData.profile.nombre_razon_social ?? null);
+          setEntityNit(profileData.profile.nit_dv ?? null);
+          setIsEsal(profileData.profile.es_esal ?? null);
+        }
+
+        if (monthlyData.input) {
+          setIncomeCop(String(monthlyData.input.income_cop ?? 0));
+          setDeductibleExpensesCop(String(monthlyData.input.deductible_expenses_cop ?? 0));
+          setWithholdingsCop(String(monthlyData.input.withholdings_cop ?? 0));
+          setVatCollectedCop(String(monthlyData.input.vat_collected_cop ?? 0));
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "No se pudieron cargar los datos fiscales.";
+        setTaxError(message);
+      } finally {
+        setIsLoadingTaxData(false);
+      }
+    }
+
+    void loadEstimate();
+    void loadTaxData();
+    void loadHistory(historyMonths);
+    void loadInvoices();
+  }, [currentMonth, currentYear, historyMonths, loadInvoices]);
+
+  function formatCop(value: number): string {
+    return new Intl.NumberFormat("es-CO", {
+      style: "currency",
+      currency: "COP",
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
+
+  function getRiskBadgeClasses(riskLevel: "high" | "medium" | "low"): string {
+    if (riskLevel === "high") {
+      return "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
+    }
+
+    if (riskLevel === "medium") {
+      return "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200";
+    }
+
+    return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+  }
+
+  function getRiskLabelEs(riskLevel: "high" | "medium" | "low"): string {
+    if (riskLevel === "high") {
+      return "Alto";
+    }
+
+    if (riskLevel === "medium") {
+      return "Medio";
+    }
+
+    return "Bajo";
+  }
+
+  function getMonthLabel(year: number, month: number): string {
+    const date = new Date(year, month - 1, 1);
+    return new Intl.DateTimeFormat("es-CO", { month: "short", year: "2-digit" }).format(date);
+  }
+
+  function formatDateTime(value: string): string {
+    return new Intl.DateTimeFormat("es-CO", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  }
+
+  function formatDateOnly(value: string | null | undefined): string {
+    if (!value) {
+      return "—";
+    }
+
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return "—";
+    }
+
+    return new Intl.DateTimeFormat("es-CO", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(parsed);
+  }
+
+  function getExtractionStatusLabel(status: "processing" | "processed" | "needs_ocr" | "error" | "pending") {
+    if (status === "processing") {
+      return "processing";
+    }
+
+    if (status === "processed") {
+      return "✓ processed";
+    }
+
+    if (status === "needs_ocr") {
+      return "needs_ocr";
+    }
+
+    if (status === "error") {
+      return "error";
+    }
+
+    return "pending";
+  }
+
+  function getExtractionStatusClasses(status: "processing" | "processed" | "needs_ocr" | "error" | "pending") {
+    if (status === "processed") {
+      return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+    }
+
+    if (status === "processing") {
+      return "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200";
+    }
+
+    if (status === "needs_ocr") {
+      return "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200";
+    }
+
+    if (status === "error") {
+      return "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
+    }
+
+    return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
+  }
+
+  function getPaymentStatusLabel(status: "unpaid" | "scheduled" | "paid") {
+    if (status === "paid") {
+      return "paid";
+    }
+
+    if (status === "scheduled") {
+      return "scheduled";
+    }
+
+    return "unpaid";
+  }
+
+  function getPaymentStatusClasses(status: "unpaid" | "scheduled" | "paid") {
+    if (status === "paid") {
+      return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+    }
+
+    if (status === "scheduled") {
+      return "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200";
+    }
+
+    return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
+  }
+
+  function getInvoiceExtractedField(invoice: InvoiceItem, fieldName: string): unknown {
+    const extractedFields =
+      invoice.extraction_raw && typeof invoice.extraction_raw === "object"
+        ? (invoice.extraction_raw.extracted_fields as Record<string, unknown> | undefined)
+        : undefined;
+
+    return extractedFields?.[fieldName];
+  }
+
+  function getInvoiceConfidence(invoice: InvoiceItem): Record<string, number> {
+    const fromRaw =
+      invoice.extraction_raw && typeof invoice.extraction_raw === "object"
+        ? (invoice.extraction_raw.confidence as Record<string, unknown> | undefined)
+        : undefined;
+
+    const source = fromRaw || invoice.extraction_confidence || {};
+
+    const confidence: Record<string, number> = {};
+
+    for (const [key, value] of Object.entries(source)) {
+      const numeric = typeof value === "number" ? value : Number(value);
+
+      if (Number.isFinite(numeric) && numeric >= 0 && numeric <= 1) {
+        confidence[key] = numeric;
+      }
+    }
+
+    return confidence;
+  }
+
+  function getInvoiceDueDate(invoice: InvoiceItem): string | null {
+    const fromExtraction = getInvoiceExtractedField(invoice, "due_date");
+    if (typeof fromExtraction === "string" && fromExtraction.trim()) {
+      return fromExtraction;
+    }
+
+    if (typeof invoice.due_date === "string" && invoice.due_date.trim()) {
+      return invoice.due_date;
+    }
+
+    return null;
+  }
+
+  async function handleSignOut() {
+    setIsSigningOut(true);
+
+    try {
+      const supabase = createBrowserSupabaseClient();
+      await supabase.auth.signOut();
+      router.replace("/login");
+      router.refresh();
+    } finally {
+      setIsSigningOut(false);
+    }
+  }
+
+  async function sendMessage(rawMessage: string) {
+    const message = rawMessage.trim();
+    if (!message || isSending) {
+      return;
+    }
+
+    setInput("");
+    setIsSending(true);
+    setMessages((current) => [...current, { role: "user", content: message }]);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          conversationId,
+          message,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("No se pudo enviar el mensaje");
+      }
+
+      const data: { conversationId: string; reply: string } = await response.json();
+      setConversationId(data.conversationId);
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", content: data.reply },
+      ]);
+    } catch {
+      setMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          content: "Hubo un error procesando tu mensaje. Intenta de nuevo.",
+        },
+      ]);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendMessage(input);
+  }
+
+  async function handleSaveTaxData() {
+    setTaxError(null);
+    setTaxSuccess(null);
+    setIsSavingTaxData(true);
+
+    try {
+      const incomeValue = Number(incomeCop || 0);
+      const deductibleExpensesValue = Number(deductibleExpensesCop || 0);
+      const withholdingsValue = Number(withholdingsCop || 0);
+      const vatCollectedValue = Number(vatCollectedCop || 0);
+      const monthlyFixedCostsValue = Number(monthlyFixedCostsCop || 0);
+      const monthlyPayrollValue = Number(monthlyPayrollCop || 0);
+      const monthlyDebtPaymentsValue = Number(monthlyDebtPaymentsCop || 0);
+
+      if (
+        !Number.isFinite(incomeValue) ||
+        !Number.isFinite(deductibleExpensesValue) ||
+        !Number.isFinite(withholdingsValue) ||
+        !Number.isFinite(vatCollectedValue) ||
+        !Number.isFinite(monthlyFixedCostsValue) ||
+        !Number.isFinite(monthlyPayrollValue) ||
+        !Number.isFinite(monthlyDebtPaymentsValue)
+      ) {
+        throw new Error("Los valores del formulario deben ser numericos.");
+      }
+
+      if (
+        incomeValue < 0 ||
+        deductibleExpensesValue < 0 ||
+        withholdingsValue < 0 ||
+        vatCollectedValue < 0 ||
+        monthlyFixedCostsValue < 0 ||
+        monthlyPayrollValue < 0 ||
+        monthlyDebtPaymentsValue < 0
+      ) {
+        throw new Error("Los valores no pueden ser negativos.");
+      }
+
+      const [profileResponse, monthlyResponse] = await Promise.all([
+        fetch("/api/profile/tax-co", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            regimen,
+            vat_responsible: vatResponsible,
+            provision_style: provisionStyle,
+            taxpayer_type: taxpayerType,
+            legal_type: taxpayerType === "juridica" ? legalType : "unknown",
+            vat_periodicity: vatPeriodicity,
+            monthly_fixed_costs_cop: monthlyFixedCostsValue,
+            monthly_payroll_cop: monthlyPayrollValue,
+            monthly_debt_payments_cop: monthlyDebtPaymentsValue,
+            municipality: municipality.trim() || null,
+          }),
+        }),
+        fetch("/api/taxes/monthly-input", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: currentYear,
+            month: currentMonth,
+            income_cop: incomeValue,
+            deductible_expenses_cop: deductibleExpensesValue,
+            withholdings_cop: withholdingsValue,
+            vat_collected_cop: vatCollectedValue,
+          }),
+        }),
+      ]);
+
+      if (!profileResponse.ok) {
+        const profileError = await profileResponse.json().catch(() => ({}));
+        throw new Error(profileError.error || "No se pudo guardar el perfil fiscal.");
+      }
+
+      if (!monthlyResponse.ok) {
+        const monthlyError = await monthlyResponse.json().catch(() => ({}));
+        throw new Error(monthlyError.error || "No se pudo guardar el resumen mensual.");
+      }
+
+      setTaxSuccess("Datos fiscales guardados.");
+
+      try {
+        const estimateResponse = await fetch("/api/taxes/estimate", { method: "GET" });
+        const estimateData = await estimateResponse.json().catch(() => ({}));
+
+        if (estimateResponse.ok) {
+          const parsedEstimateData = estimateData as TaxEstimateResponse;
+          setEstimate(parsedEstimateData.breakdown);
+          setEstimateError(null);
+        } else if (estimateResponse.status === 400) {
+          setEstimate(null);
+          setEstimateError("Completa tus datos del mes para calcular.");
+        } else {
+          setEstimate(null);
+          setEstimateError("No se pudo cargar la provisión estimada.");
+        }
+      } catch {
+        setEstimate(null);
+        setEstimateError("No se pudo cargar la provisión estimada.");
+      }
+
+      try {
+        const historyResponse = await fetch(`/api/taxes/history?months=${historyMonths}`, {
+          method: "GET",
+        });
+        const historyData = await historyResponse.json().catch(() => ({}));
+
+        if (historyResponse.ok) {
+          const parsedHistoryData = historyData as TaxHistoryResponse;
+          setHistoryItems(parsedHistoryData.items ?? []);
+          setHistoryError(null);
+        } else {
+          const errorMessage =
+            (historyData as { error?: string }).error || "No se pudo cargar el histórico.";
+          setHistoryItems([]);
+          setHistoryError(errorMessage);
+        }
+      } catch {
+        setHistoryItems([]);
+        setHistoryError("No se pudo cargar el histórico.");
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "No se pudieron guardar los datos fiscales.";
+      setTaxError(message);
+    } finally {
+      setIsSavingTaxData(false);
+    }
+  }
+
+  async function handleInvoiceUpload(file: File) {
+    if (isUploadingInvoice || demoMode) {
+      return;
+    }
+
+    setIsUploadingInvoice(true);
+    setInvoicesError(null);
+    setInvoiceUploadMessage(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/invoices/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        status?: "created" | "duplicate";
+        error?: string;
+      };
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error("Inicia sesión para subir facturas.");
+        }
+
+        if (response.status === 413) {
+          throw new Error("Archivo demasiado grande.");
+        }
+
+        throw new Error(data.error || "No se pudo subir la factura.");
+      }
+
+      if (data.status === "duplicate") {
+        window.alert("Esta factura ya fue cargada anteriormente.");
+        setInvoiceUploadMessage("Archivo duplicado: ya existe una factura asociada.");
+      } else {
+        setInvoiceUploadMessage("Factura cargada correctamente.");
+      }
+      await loadInvoices();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo subir la factura.";
+      setInvoicesError(message);
+    } finally {
+      setIsUploadingInvoice(false);
+    }
+  }
+
+  function handleInvoicePickerClick() {
+    if (isUploadingInvoice || demoMode) {
+      return;
+    }
+
+    invoiceInputRef.current?.click();
+  }
+
+  function handleInvoiceFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0];
+
+    if (!selectedFile) {
+      return;
+    }
+
+    void handleInvoiceUpload(selectedFile);
+    event.target.value = "";
+  }
+
+  function getInvoiceDisplayStatus(invoice: InvoiceItem): "processing" | "processed" | "needs_ocr" | "error" | "pending" {
+    if (processingInvoiceId === invoice.id) {
+      return "processing";
+    }
+
+    const localStatus = invoiceProcessStatus[invoice.id];
+    if (localStatus) {
+      return localStatus;
+    }
+
+    const rawStatus = invoice.extraction_raw?.status;
+    if (rawStatus === "needs_ocr") {
+      return "needs_ocr";
+    }
+
+    if (invoice.extracted_at) {
+      return "processed";
+    }
+
+    return "pending";
+  }
+
+  async function handleProcessInvoice(invoiceId: string) {
+    if (demoMode || processingInvoiceId) {
+      return;
+    }
+
+    setProcessingInvoiceId(invoiceId);
+    setInvoicesError(null);
+    setInvoiceUploadMessage(null);
+
+    try {
+      const response = await fetch(`/api/invoices/${invoiceId}/process`, {
+        method: "POST",
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        status?: "processed" | "needs_ocr";
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(data.error || "No se pudo procesar la factura.");
+      }
+
+      const nextStatus = data.status === "needs_ocr" ? "needs_ocr" : "processed";
+      setInvoiceProcessStatus((current) => ({ ...current, [invoiceId]: nextStatus }));
+      setInvoiceUploadMessage(
+        nextStatus === "needs_ocr"
+          ? "Factura escaneada o sin texto. Se requiere OCR (pendiente)."
+          : "Factura procesada correctamente.",
+      );
+      await loadInvoices();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo procesar la factura.";
+      setInvoiceProcessStatus((current) => ({ ...current, [invoiceId]: "error" }));
+      setInvoicesError(message);
+    } finally {
+      setProcessingInvoiceId(null);
+    }
+  }
+
+  function openScheduleModal(invoice: InvoiceItem) {
+    setScheduleInvoice(invoice);
+    setSchedulePaymentDate(invoice.scheduled_payment_date ?? getInvoiceDueDate(invoice) ?? "");
+    setSchedulePaymentMethod(invoice.payment_method ?? "transfer");
+    setSchedulePaymentNotes(invoice.payment_notes ?? "");
+  }
+
+  async function updateInvoicePayment(
+    invoiceId: string,
+    payload: {
+      payment_status?: "unpaid" | "scheduled" | "paid";
+      scheduled_payment_date?: string | null;
+      paid_at?: string | null;
+      payment_method?: "transfer" | "pse" | "cash" | "other" | null;
+      payment_notes?: string | null;
+      payment_url?: string | null;
+      supplier_portal_url?: string | null;
+      last_payment_opened_at?: string | null;
+    },
+  ): Promise<boolean> {
+    if (demoMode) {
+      return false;
+    }
+
+    setUpdatingPaymentInvoiceId(invoiceId);
+    setInvoicesError(null);
+    setInvoiceUploadMessage(null);
+
+    try {
+      const response = await fetch(`/api/invoices/${invoiceId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = (await response.json().catch(() => ({}))) as { error?: string };
+
+      if (!response.ok) {
+        throw new Error(data.error || "No se pudo actualizar el pago de la factura.");
+      }
+
+      await loadInvoices();
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo actualizar el pago de la factura.";
+      setInvoicesError(message);
+      return false;
+    } finally {
+      setUpdatingPaymentInvoiceId(null);
+    }
+  }
+
+  async function handleMarkInvoicePaid(invoice: InvoiceItem) {
+    const updated = await updateInvoicePayment(invoice.id, {
+      payment_status: "paid",
+      payment_method: invoice.payment_method,
+      payment_notes: invoice.payment_notes,
+    });
+
+    if (updated) {
+      setInvoiceUploadMessage("Factura marcada como pagada.");
+    }
+  }
+
+  async function handleCancelInvoiceSchedule(invoice: InvoiceItem) {
+    const updated = await updateInvoicePayment(invoice.id, {
+      payment_status: "unpaid",
+      scheduled_payment_date: null,
+      paid_at: null,
+      payment_method: invoice.payment_method,
+      payment_notes: invoice.payment_notes,
+    });
+
+    if (updated) {
+      setInvoiceUploadMessage("Programación cancelada.");
+    }
+  }
+
+  async function handleSaveInvoiceSchedule() {
+    if (!scheduleInvoice) {
+      return;
+    }
+
+    if (!schedulePaymentDate) {
+      setInvoicesError("Debes seleccionar una fecha para programar el pago.");
+      return;
+    }
+
+    const updated = await updateInvoicePayment(scheduleInvoice.id, {
+      payment_status: "scheduled",
+      scheduled_payment_date: schedulePaymentDate,
+      payment_method: schedulePaymentMethod,
+      payment_notes: schedulePaymentNotes || null,
+    });
+
+    if (!updated) {
+      return;
+    }
+
+    setScheduleInvoice(null);
+    setSchedulePaymentDate("");
+    setSchedulePaymentMethod("transfer");
+    setSchedulePaymentNotes("");
+    setInvoiceUploadMessage("Pago programado correctamente.");
+  }
+
+  function openPayLinkModal(invoice: InvoiceItem) {
+    setPayLinkInvoice(invoice);
+    setPayLinkPaymentUrl(invoice.payment_url ?? "");
+    setPayLinkSupplierPortalUrl(invoice.supplier_portal_url ?? "");
+  }
+
+  async function handlePayInvoice(invoice: InvoiceItem) {
+    const targetUrl = invoice.payment_url || invoice.supplier_portal_url;
+
+    if (!targetUrl) {
+      openPayLinkModal(invoice);
+      return;
+    }
+
+    const updated = await updateInvoicePayment(invoice.id, {
+      last_payment_opened_at: new Date().toISOString(),
+    });
+
+    if (!updated) {
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    }
+
+    setInvoiceUploadMessage("Cuando termines, marca como pagada o sube comprobante (próximo).");
+  }
+
+  async function handleSavePayLinksAndOpen() {
+    if (!payLinkInvoice) {
+      return;
+    }
+
+    const nextPaymentUrl = payLinkPaymentUrl.trim();
+    const nextSupplierPortalUrl = payLinkSupplierPortalUrl.trim();
+
+    if (!nextPaymentUrl && !nextSupplierPortalUrl) {
+      setInvoicesError("Debes agregar al menos un link de pago o portal del proveedor.");
+      return;
+    }
+
+    const updated = await updateInvoicePayment(payLinkInvoice.id, {
+      payment_url: nextPaymentUrl || null,
+      supplier_portal_url: nextSupplierPortalUrl || null,
+      last_payment_opened_at: new Date().toISOString(),
+    });
+
+    if (!updated) {
+      return;
+    }
+
+    const targetUrl = nextPaymentUrl || nextSupplierPortalUrl;
+
+    setPayLinkInvoice(null);
+    setPayLinkPaymentUrl("");
+    setPayLinkSupplierPortalUrl("");
+
+    if (typeof window !== "undefined") {
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    }
+
+    setInvoiceUploadMessage("Cuando termines, marca como pagada o sube comprobante (próximo).");
+  }
+
+  function handleReceiptPickerClick(invoiceId: string) {
+    if (demoMode || uploadingReceiptInvoiceId) {
+      return;
+    }
+
+    pendingReceiptInvoiceIdRef.current = invoiceId;
+    invoiceReceiptInputRef.current?.click();
+  }
+
+  async function uploadReceiptForInvoice(invoiceId: string, file: File) {
+    if (demoMode) {
+      return;
+    }
+
+    setUploadingReceiptInvoiceId(invoiceId);
+    setInvoicesError(null);
+    setInvoiceUploadMessage(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      formData.append("invoiceId", invoiceId);
+        const response = await fetch(`/api/receipts/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        status?: "created" | "duplicate";
+        error?: string;
+      };
+
+      if (!response.ok) {
+        if (response.status === 413) {
+          throw new Error("Comprobante demasiado grande (máximo 15MB).");
+        }
+
+        throw new Error(data.error || "No se pudo subir el comprobante.");
+      }
+
+      if (data.status === "duplicate") {
+        setInvoiceUploadMessage("Comprobante duplicado: ya existe un archivo igual.");
+      } else {
+        setInvoiceUploadMessage("Comprobante subido, marcada como pagada ✓");
+      }
+
+      await loadInvoices();
+
+      if (receiptsInvoice?.id === invoiceId) {
+        await loadInvoiceReceipts(receiptsInvoice);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo subir el comprobante.";
+      setInvoicesError(message);
+    } finally {
+      setUploadingReceiptInvoiceId(null);
+    }
+  }
+
+  function handleReceiptFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0];
+    const invoiceId = pendingReceiptInvoiceIdRef.current;
+
+    if (selectedFile && invoiceId) {
+      void uploadReceiptForInvoice(invoiceId, selectedFile);
+    }
+
+    pendingReceiptInvoiceIdRef.current = null;
+    event.target.value = "";
+  }
+
+  function handleRutClick() {
+    if (demoMode || isUploadingRut) return;
+    rutInputRef.current?.click();
+  }
+
+  async function handleRutFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      if (rutInputRef.current) {
+         rutInputRef.current.value = "";
+      }
+      return;
+    }
+
+    setIsUploadingRut(true);
+    setTaxError(null);
+    setTaxSuccess(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/profile/upload-rut", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Error al subir el RUT.");
+      }
+
+      setTaxSuccess("¡RUT procesado! Tu perfil fiscal ha sido configurado correctamente.");
+      setTimeout(() => {
+        window.location.reload();
+      }, 1500);
+    } catch (e) {
+      setTaxError(e instanceof Error ? e.message : "Error desconocido al procesar RUT.");
+    } finally {
+      setIsUploadingRut(false);
+      event.target.value = "";
+      if (rutInputRef.current) {
+        rutInputRef.current.value = "";
+      }
+    }
+  }
+
+  async function loadInvoiceReceipts(invoice: InvoiceItem) {
+    setReceiptsInvoice(invoice);
+    setIsLoadingReceipts(true);
+    setInvoicesError(null);
+
+    try {
+      const response = await fetch(`/api/invoices/${invoice.id}/receipts`, { method: "GET" });
+      const data = (await response.json().catch(() => ({}))) as InvoiceReceiptsResponse & { error?: string };
+
+      if (!response.ok) {
+        throw new Error(data.error || "No se pudieron cargar los comprobantes.");
+      }
+
+      setInvoiceReceipts(data.receipts ?? []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudieron cargar los comprobantes.";
+      setInvoiceReceipts([]);
+      setInvoicesError(message);
+    } finally {
+      setIsLoadingReceipts(false);
+    }
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Use target validation to avoid flickering
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (file && (file.type === "application/pdf" || file.type.startsWith("image/"))) {
+      void handleInvoiceUpload(file);
+    }
+  };
+
