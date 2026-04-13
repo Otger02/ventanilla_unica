@@ -145,7 +145,7 @@ export default function DashboardPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [selection]);
+  }, [selection.cleanStale]);
 
   useEffect(() => {
     void loadDashboard();

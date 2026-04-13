@@ -29,8 +29,9 @@ export async function GET() {
     .order("created_at", { ascending: false })
     .limit(8);
 
+  // Gracefully handle missing table (migration not yet applied)
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ current: null, previous: null, delta_score: null, history: [] });
   }
 
   const history = (rows ?? []) as Snapshot[];
