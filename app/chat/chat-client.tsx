@@ -1,9 +1,9 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { FileText, CheckCircle, BarChart3 } from "lucide-react";
+import { FileText, CheckCircle, BarChart3, Clock, Upload, CreditCard, Calendar, Edit3, Shield, ExternalLink, History } from "lucide-react";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
@@ -14,11 +14,92 @@ import { PageShell } from "@/components/ui/page-shell";
 import { SectionCard } from "@/components/ui/section-card";
 import { Tabs } from "@/components/ui/tabs";
 import { TaxTimeline } from "@/components/ui/tax-timeline";
+import { type ReviewAction } from "@/lib/invoices/review-actions";
+import { getActionFeedbackMessage } from "@/lib/invoices/review-actions";
+import { useInvoiceActionDispatcher, type ActionHandlers } from "@/hooks/useInvoiceActionDispatcher";
+import { useOperationalRefresh } from "@/hooks/useOperationalRefresh";
+
+type ConfidenceLevel = "safe" | "review" | "blocked";
+type ConfidenceResult = { level: ConfidenceLevel; reason: string };
+
+type RecommendedAction = {
+  invoice_id: string;
+  supplier_name: string;
+  invoice_number: string | null;
+  total_cop: number | null;
+  due_date: string | null;
+  payment_status: "unpaid" | "scheduled";
+  action_reason: string;
+  available_actions: ReviewAction[];
+  confidence: ConfidenceLevel;
+  action_confidence: Record<string, ConfidenceResult>;
+  consequence_if_ignored?: string;
+  recommended_resolution?: string;
+  readiness_score?: number;
+  readiness_level?: string;
+  readiness_reason?: string;
+};
+
+type BulkRecommendation = {
+  kind: "schedule_group" | "review_group";
+  title: string;
+  description: string;
+  invoice_ids: string[];
+  count: number;
+  total_cop: number | null;
+  reason: string;
+  recommended_resolution?: string;
+  confidence_summary: { safe_count: number; review_count: number; blocked_count: number };
+  overall_confidence: ConfidenceLevel;
+};
+
+type WeeklyPlanSummary = {
+  this_week: {
+    must_pay: { invoice_id: string; supplier_name: string | null; total_cop: number | null }[];
+    should_schedule: { invoice_id: string; supplier_name: string | null; total_cop: number | null }[];
+    should_review: { invoice_id: string; supplier_name: string | null; total_cop: number | null }[];
+  };
+  totals: {
+    must_pay_total: number;
+    upcoming_total: number;
+  };
+  cash_projection: {
+    current_cash?: number;
+    after_must_pay: number;
+    after_schedule: number;
+  };
+  cash_scenarios: {
+    do_nothing: { outflow_now: number; outflow_scheduled: number; resulting_cash?: number; label: string };
+    pay_urgent_only: { outflow_now: number; outflow_scheduled: number; resulting_cash?: number; label: string };
+    pay_and_schedule: { outflow_now: number; outflow_scheduled: number; resulting_cash?: number; label: string };
+  };
+};
 
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  recommended_actions?: RecommendedAction[];
+  bulk_recommendations?: BulkRecommendation[];
+  weekly_plan?: WeeklyPlanSummary | null;
 };
+
+type ConfirmActionPayload =
+  | {
+      type: "schedule_individual";
+      invoice_id: string;
+      supplier_name: string;
+      total_cop: number | null;
+      due_date: string | null;
+    }
+  | {
+      type: "schedule_bulk";
+      invoice_ids: string[];
+      count: number;
+      total_cop: number | null;
+      title: string;
+    };
+
+type ConfirmPhase = "confirm" | "running" | "done";
 
 type ChatClientProps = {
   demoMode: boolean;
@@ -79,6 +160,13 @@ type TaxHistoryResponse = {
   items: TaxHistoryItem[];
 };
 
+type ActivityLogItem = {
+  id: string;
+  activity: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
 type InvoiceItem = {
   id: string;
   created_at: string;
@@ -86,6 +174,7 @@ type InvoiceItem = {
   payment_status: "unpaid" | "scheduled" | "paid";
   total_cop: number | null;
   supplier_name: string | null;
+  invoice_number: string | null;
   due_date: string | null;
   scheduled_payment_date: string | null;
   paid_at: string | null;
@@ -103,6 +192,15 @@ type InvoiceItem = {
     status?: string;
     [key: string]: unknown;
   } | null;
+  data_quality_status: "ok" | "suspect" | "incomplete";
+  data_quality_flags: {
+    low_confidence?: boolean;
+    missing_due_date?: boolean;
+    missing_supplier?: boolean;
+    suspect_amount?: boolean;
+  } | null;
+  vat_status: "iva_usable" | "iva_en_revision" | "iva_no_usable" | "sin_iva";
+  vat_reason: string | null;
 };
 
 type InvoicesResponse = {
@@ -217,6 +315,12 @@ export function ChatClient({
   const currentMonth = now.getMonth() + 1;
 
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const [pendingAlertAction, setPendingAlertAction] = useState<{ action: string; invoiceId: string } | null>(() => {
+    const action = searchParams.get("action");
+    const invoiceId = searchParams.get("invoice");
+    return action && invoiceId ? { action, invoiceId } : null;
+  });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -265,6 +369,15 @@ export function ChatClient({
   const [updatingPaymentInvoiceId, setUpdatingPaymentInvoiceId] = useState<string | null>(null);
   const [invoiceProcessStatus, setInvoiceProcessStatus] = useState<Record<string, "processed" | "needs_ocr" | "error">>({});
   const [detailsInvoice, setDetailsInvoice] = useState<InvoiceItem | null>(null);
+  const [editingInvoice, setEditingInvoice] = useState(false);
+  const [editSupplier, setEditSupplier] = useState("");
+  const [editTotal, setEditTotal] = useState("");
+  const [editDueDate, setEditDueDate] = useState("");
+  const [editInvoiceNumber, setEditInvoiceNumber] = useState("");
+  const [savingInvoiceEdit, setSavingInvoiceEdit] = useState(false);
+  const [invoiceEditMessage, setInvoiceEditMessage] = useState<string | null>(null);
+  const [activityLog, setActivityLog] = useState<ActivityLogItem[]>([]);
+  const [isLoadingActivity, setIsLoadingActivity] = useState(false);
   const [scheduleInvoice, setScheduleInvoice] = useState<InvoiceItem | null>(null);
   const [schedulePaymentDate, setSchedulePaymentDate] = useState("");
   const [schedulePaymentMethod, setSchedulePaymentMethod] = useState<"transfer" | "pse" | "cash" | "other">("transfer");
@@ -277,8 +390,11 @@ export function ChatClient({
   const [isLoadingReceipts, setIsLoadingReceipts] = useState(false);
   const [uploadingReceiptInvoiceId, setUploadingReceiptInvoiceId] = useState<string | null>(null);
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
+  const [alertCount, setAlertCount] = useState(0);
+  const [alertCritical, setAlertCritical] = useState(0);
   const [invoiceUploadMessage, setInvoiceUploadMessage] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"chat" | "datos">("chat");
+  const [rightTab, setRightTab] = useState<"urgente" | "facturas" | "fiscal">("urgente");
   const [isDragging, setIsDragging] = useState(false);
   const invoiceInputRef = useRef<HTMLInputElement | null>(null);
   const invoiceReceiptInputRef = useRef<HTMLInputElement | null>(null);
@@ -286,10 +402,31 @@ export function ChatClient({
   const [isUploadingRut, setIsUploadingRut] = useState(false);
   const pendingReceiptInvoiceIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
+  const [confirmAction, setConfirmAction] = useState<ConfirmActionPayload | null>(null);
+  const [confirmPhase, setConfirmPhase] = useState<ConfirmPhase>("confirm");
+  const [confirmResult, setConfirmResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [confirmProgress, setConfirmProgress] = useState({ completed: 0, total: 0 });
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isSending]);
+
+  useEffect(() => {
+    if (!detailsInvoice) {
+      setActivityLog([]);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingActivity(true);
+    fetch(`/api/invoices/${detailsInvoice.id}/activity`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setActivityLog(data.activities ?? []);
+      })
+      .finally(() => { if (!cancelled) setIsLoadingActivity(false); });
+    return () => { cancelled = true; };
+  }, [detailsInvoice]);
 
   async function loadHistory(months: 6 | 12) {
     setIsLoadingHistory(true);
@@ -347,6 +484,37 @@ export function ChatClient({
       setIsLoadingInvoices(false);
     }
   }, [demoMode]);
+
+  // ─── Centralized alert refresh ───
+  const loadAlerts = useCallback(async () => {
+    if (demoMode) return;
+    try {
+      const r = await fetch("/api/alerts/summary");
+      if (!r.ok) return;
+      const d = (await r.json()) as { counts?: { total?: number; critical?: number } };
+      if (d?.counts) {
+        setAlertCount(d.counts.total ?? 0);
+        setAlertCritical(d.counts.critical ?? 0);
+      }
+    } catch { /* swallow */ }
+  }, [demoMode]);
+
+  // ─── Operational refresh (invoices + alerts in one call) ───
+  const { refreshAll } = useOperationalRefresh({
+    loadInvoices,
+    loadAlerts,
+  });
+
+  // ─── Action handlers for dispatcher ───
+  const actionHandlers: ActionHandlers = useMemo(() => ({
+    handlePayInvoice: (inv) => handlePayInvoice(inv as InvoiceItem),
+    openScheduleModal: (inv) => openScheduleModal(inv as InvoiceItem),
+    openDetailsModal: (inv) => setDetailsInvoice(inv as InvoiceItem),
+    openReceiptsModal: (inv) => loadInvoiceReceipts(inv as InvoiceItem),
+  }), []);
+
+  // ─── Unified action dispatcher ───
+  const { dispatch: dispatchAction } = useInvoiceActionDispatcher(invoices, actionHandlers);
 
   useEffect(() => {
     async function loadEstimate() {
@@ -415,9 +583,6 @@ export function ChatClient({
           setMonthlyPayrollCop(String(profileData.profile.monthly_payroll_cop ?? 0));
           setMonthlyDebtPaymentsCop(String(profileData.profile.monthly_debt_payments_cop ?? 0));
           setMunicipality(profileData.profile.municipality ?? "");
-          setEntityName(profileData.profile.nombre_razon_social ?? null);
-          setEntityNit(profileData.profile.nit_dv ?? null);
-          setIsEsal(profileData.profile.es_esal ?? null);
         }
 
         if (monthlyData.input) {
@@ -442,7 +607,23 @@ export function ChatClient({
     void loadTaxData();
     void loadHistory(historyMonths);
     void loadInvoices();
-  }, [currentMonth, currentYear, historyMonths, loadInvoices]);
+    void loadAlerts();
+  }, [currentMonth, currentYear, historyMonths, loadInvoices, loadAlerts]);
+
+  // Dispatch alert action from URL params once invoices are loaded
+  useEffect(() => {
+    if (!pendingAlertAction || invoices.length === 0) return;
+    const inv = invoices.find((i) => i.id === pendingAlertAction.invoiceId);
+    if (!inv) return;
+    setPendingAlertAction(null);
+    // Clear URL params without navigation
+    window.history.replaceState(null, "", "/chat");
+
+    const result = dispatchAction(pendingAlertAction.action as ReviewAction, pendingAlertAction.invoiceId);
+    if (!result.success) {
+      setInvoicesError(result.message);
+    }
+  }, [pendingAlertAction, invoices, dispatchAction]);
 
   function formatCop(value: number): string {
     return new Intl.NumberFormat("es-CO", {
@@ -545,7 +726,7 @@ export function ChatClient({
       return "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
     }
 
-    return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
+    return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300";
   }
 
   function getPaymentStatusLabel(status: "unpaid" | "scheduled" | "paid") {
@@ -569,7 +750,7 @@ export function ChatClient({
       return "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200";
     }
 
-    return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
+    return "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300";
   }
 
   function getInvoiceExtractedField(invoice: InvoiceItem, fieldName: string): unknown {
@@ -654,12 +835,21 @@ export function ChatClient({
         throw new Error("No se pudo enviar el mensaje");
       }
 
-      const data: { conversationId: string; reply: string } = await response.json();
+      const data: { conversationId: string; reply: string; recommended_actions?: RecommendedAction[]; bulk_recommendations?: BulkRecommendation[]; weekly_plan?: WeeklyPlanSummary | null } = await response.json();
       setConversationId(data.conversationId);
       setMessages((current) => [
         ...current,
-        { role: "assistant", content: data.reply },
+        {
+          role: "assistant",
+          content: data.reply,
+          recommended_actions: data.recommended_actions,
+          bulk_recommendations: data.bulk_recommendations,
+          weekly_plan: data.weekly_plan,
+        },
       ]);
+      if (data.recommended_actions && data.recommended_actions.length > 0) {
+        void refreshAll();
+      }
     } catch {
       setMessages((current) => [
         ...current,
@@ -853,7 +1043,7 @@ export function ChatClient({
       } else {
         setInvoiceUploadMessage("Factura cargada correctamente.");
       }
-      await loadInvoices();
+      await refreshAll();
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo subir la factura.";
       setInvoicesError(message);
@@ -933,7 +1123,7 @@ export function ChatClient({
           ? "Factura escaneada o sin texto. Se requiere OCR (pendiente)."
           : "Factura procesada correctamente.",
       );
-      await loadInvoices();
+      await refreshAll();
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo procesar la factura.";
       setInvoiceProcessStatus((current) => ({ ...current, [invoiceId]: "error" }));
@@ -986,7 +1176,7 @@ export function ChatClient({
         throw new Error(data.error || "No se pudo actualizar el pago de la factura.");
       }
 
-      await loadInvoices();
+      await refreshAll();
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo actualizar el pago de la factura.";
@@ -994,6 +1184,50 @@ export function ChatClient({
       return false;
     } finally {
       setUpdatingPaymentInvoiceId(null);
+    }
+  }
+
+  function openEditMode(invoice: InvoiceItem) {
+    setEditSupplier(invoice.supplier_name ?? "");
+    setEditTotal(invoice.total_cop !== null ? String(invoice.total_cop) : "");
+    setEditDueDate(invoice.due_date ?? "");
+    setEditInvoiceNumber(invoice.invoice_number ?? "");
+    setEditingInvoice(true);
+    setInvoiceEditMessage(null);
+  }
+
+  async function handleSaveInvoiceEdit() {
+    if (!detailsInvoice || demoMode) return;
+    setSavingInvoiceEdit(true);
+    setInvoiceEditMessage(null);
+    try {
+      const payload: Record<string, unknown> = {
+        supplier_name: editSupplier.trim() || null,
+        total_cop: editTotal.trim() ? Number(editTotal) : null,
+        due_date: editDueDate || null,
+        invoice_number: editInvoiceNumber.trim() || null,
+      };
+      const res = await fetch(`/api/invoices/${detailsInvoice.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; invoice?: Record<string, unknown> };
+      if (!res.ok) throw new Error(data.error || "Error guardando cambios.");
+      await refreshAll();
+      setEditingInvoice(false);
+      setInvoiceEditMessage("Factura actualizada");
+      // Re-fetch to get updated detailsInvoice
+      const refetchRes = await fetch(`/api/invoices`);
+      if (refetchRes.ok) {
+        const refetchData = (await refetchRes.json()) as InvoicesResponse;
+        const updated = (refetchData.invoices ?? []).find((i: InvoiceItem) => i.id === detailsInvoice.id);
+        if (updated) setDetailsInvoice(updated);
+      }
+    } catch (err) {
+      setInvoiceEditMessage(err instanceof Error ? err.message : "Error guardando.");
+    } finally {
+      setSavingInvoiceEdit(false);
     }
   }
 
@@ -1049,6 +1283,93 @@ export function ChatClient({
     setSchedulePaymentMethod("transfer");
     setSchedulePaymentNotes("");
     setInvoiceUploadMessage("Pago programado correctamente.");
+  }
+
+  // ─── Quick execution (safe actions) ───
+
+  async function executeConfirmedAction() {
+    if (!confirmAction || demoMode) return;
+
+    setConfirmPhase("running");
+
+    if (confirmAction.type === "schedule_individual") {
+      const paymentDate = confirmAction.due_date ?? new Date().toISOString().slice(0, 10);
+      const ok = await updateInvoicePayment(confirmAction.invoice_id, {
+        payment_status: "scheduled",
+        scheduled_payment_date: paymentDate,
+        payment_method: "transfer",
+      });
+      setConfirmResult({
+        success: ok,
+        message: ok ? "Pago programado correctamente." : "Error al programar el pago.",
+      });
+      setConfirmPhase("done");
+      return;
+    }
+
+    if (confirmAction.type === "schedule_bulk") {
+      const ids = confirmAction.invoice_ids;
+      const total = ids.length;
+      let completed = 0;
+      let succeeded = 0;
+      let failed = 0;
+
+      setConfirmProgress({ completed: 0, total });
+
+      // Find a sensible default date: earliest due_date from the batch
+      const batchInvoices = invoices.filter((inv) => ids.includes(inv.id));
+      const dueDates = batchInvoices
+        .map((inv) => getInvoiceDueDate(inv))
+        .filter((d): d is string => d !== null)
+        .sort();
+      const paymentDate = dueDates[0] ?? new Date().toISOString().slice(0, 10);
+
+      // Concurrency-limited PATCH (groups of 5)
+      const CONCURRENCY = 5;
+      for (let i = 0; i < ids.length; i += CONCURRENCY) {
+        const batch = ids.slice(i, i + CONCURRENCY);
+        const results = await Promise.allSettled(
+          batch.map((id) =>
+            fetch(`/api/invoices/${id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                payment_status: "scheduled",
+                scheduled_payment_date: paymentDate,
+                payment_method: "transfer",
+                payment_notes: null,
+              }),
+            }).then((r) => {
+              if (!r.ok) throw new Error(`HTTP ${r.status}`);
+              return r;
+            }),
+          ),
+        );
+        for (const r of results) {
+          completed++;
+          if (r.status === "fulfilled") succeeded++;
+          else failed++;
+        }
+        setConfirmProgress({ completed, total });
+      }
+
+      await refreshAll();
+      setConfirmResult({
+        success: failed === 0,
+        message:
+          failed === 0
+            ? `${succeeded} factura${succeeded !== 1 ? "s" : ""} programada${succeeded !== 1 ? "s" : ""} correctamente.`
+            : `${succeeded} programada${succeeded !== 1 ? "s" : ""}, ${failed} con error.`,
+      });
+      setConfirmPhase("done");
+    }
+  }
+
+  function closeConfirmation() {
+    setConfirmAction(null);
+    setConfirmPhase("confirm");
+    setConfirmResult(null);
+    setConfirmProgress({ completed: 0, total: 0 });
   }
 
   function openPayLinkModal(invoice: InvoiceItem) {
@@ -1163,7 +1484,7 @@ export function ChatClient({
         setInvoiceUploadMessage("Comprobante subido, marcada como pagada ✓");
       }
 
-      await loadInvoices();
+      await refreshAll();
 
       if (receiptsInvoice?.id === invoiceId) {
         await loadInvoiceReceipts(receiptsInvoice);
@@ -1258,6 +1579,36 @@ export function ChatClient({
     }
   }
 
+  /** Close details modal and advance to next invoice if sequential bulk review is active. */
+  function closeDetailsModal() {
+    setDetailsInvoice(null);
+    setEditingInvoice(false);
+    setInvoiceEditMessage(null);
+
+    try {
+      const raw = sessionStorage.getItem("vu_bulk_review_queue");
+      if (raw) {
+        const remaining: string[] = JSON.parse(raw);
+        if (Array.isArray(remaining) && remaining.length > 0) {
+          const [nextId, ...rest] = remaining;
+          if (rest.length > 0) {
+            sessionStorage.setItem("vu_bulk_review_queue", JSON.stringify(rest));
+          } else {
+            sessionStorage.removeItem("vu_bulk_review_queue");
+          }
+          // Small delay so the current modal fully closes before the next opens
+          setTimeout(() => {
+            dispatchAction("review_invoice" as ReviewAction, nextId);
+          }, 200);
+          return;
+        }
+        sessionStorage.removeItem("vu_bulk_review_queue");
+      }
+    } catch {
+      sessionStorage.removeItem("vu_bulk_review_queue");
+    }
+  }
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1291,26 +1642,31 @@ export function ChatClient({
   return (
     <PageShell className="!h-[100dvh] flex flex-col overflow-hidden !px-0 !py-0 sm:!px-0 !max-w-none">
       {/* Header de Identidad (Top Bar) */}
-      <div className="flex-none bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 px-4 md:px-6 py-3 flex items-center justify-between z-50 shadow-sm relative">
+      <div className="flex-none bg-surface border-b border-border px-4 md:px-6 py-3 flex items-center justify-between z-50 shadow-sm relative">
         <div>
           {entityName && entityNit ? (
             <>
-              <h1 className="text-xl md:text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">{entityName}</h1>
-              <p className="text-xs md:text-sm font-medium text-zinc-500 dark:text-zinc-400">
+              <h1 className="text-xl md:text-2xl font-bold tracking-tight text-foreground">{entityName}</h1>
+              <p className="text-xs md:text-sm font-medium text-muted">
                 NIT: {entityNit} {isEsal ? " | ESAL" : ""}
               </p>
             </>
           ) : (
             <div className="animate-pulse flex flex-col gap-1.5">
-               <div className="h-6 w-64 bg-zinc-200 dark:bg-zinc-700 rounded"></div>
-               <div className="h-4 w-32 bg-zinc-200 dark:bg-zinc-700 rounded"></div>
+               <div className="h-6 w-64 bg-surface-secondary rounded"></div>
+               <div className="h-4 w-32 bg-surface-secondary rounded"></div>
             </div>
           )}
         </div>
         <div className="flex gap-3 items-center">
           <Link href="/dashboard">
-            <Button variant="outline" size="sm" className="hidden md:flex gap-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800">
+            <Button variant="outline" size="sm" className="hidden md:flex gap-2 bg-accent-soft text-accent border-accent/20 hover:bg-accent/10">
               <BarChart3 className="w-4 h-4" /> Dashboard
+              {alertCount > 0 && (
+                <span className={`inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${alertCritical > 0 ? "bg-red-500 text-white" : "bg-amber-500 text-white"}`}>
+                  {alertCount}
+                </span>
+              )}
             </Button>
           </Link>
           <div className="hidden sm:inline-flex items-center justify-center px-3 py-1 text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 rounded-full border border-emerald-200 dark:border-emerald-800">
@@ -1331,7 +1687,7 @@ export function ChatClient({
       </div>
 
       {/* Main Workspace Layout (2 Columnas) */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 gap-0 lg:gap-6 p-0 lg:p-6 min-h-0 bg-zinc-50/40 dark:bg-black/20">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 gap-0 lg:gap-6 p-0 lg:p-6 min-h-0 bg-background">
         
         {/* Mobile Tabs */}
         <div className="col-span-1 lg:hidden flex-none px-4 pt-4">
@@ -1347,26 +1703,26 @@ export function ChatClient({
 
         {/* Columna Izquierda: Chat y Drag & Drop (60% - lg:col-span-3) */}
         <div 
-          className={`${mobileTab === "chat" ? "flex" : "hidden"} m-4 space-y-0 lg:m-0 lg:col-span-3 lg:flex flex-col relative min-h-0 bg-white dark:bg-zinc-900/80 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden`}
+          className={`${mobileTab === "chat" ? "flex" : "hidden"} m-4 space-y-0 lg:m-0 lg:col-span-3 lg:flex flex-col relative min-h-0 bg-surface rounded-xl border border-border shadow-sm overflow-hidden`}
           onDragOver={handleDragOver}
           onDragEnter={handleDragEnter}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
           {isDragging && (
-             <div className="absolute inset-0 z-50 bg-blue-50/90 dark:bg-blue-900/20 backdrop-blur-[2px] border-2 border-dashed border-blue-500 flex items-center justify-center rounded-xl transition-all">
-               <div className="bg-white dark:bg-zinc-900 px-8 py-6 rounded-2xl shadow-xl flex flex-col items-center border border-blue-100 dark:border-blue-800">
-                 <FileText className="h-12 w-12 text-blue-600 dark:text-blue-400 mb-3 animate-bounce" />
-                 <p className="text-xl font-bold text-zinc-900 dark:text-zinc-100">Suelta tu factura o recibo aquí</p>
-                 <p className="mt-1 text-sm font-medium text-zinc-500 dark:text-zinc-400">Archivos PDF, PNG, JPG aceptados</p>
+             <div className="absolute inset-0 z-50 bg-accent-soft backdrop-blur-[2px] border-2 border-dashed border-accent flex items-center justify-center rounded-xl transition-all">
+               <div className="bg-surface px-8 py-6 rounded-2xl shadow-xl flex flex-col items-center border border-border">
+                 <FileText className="h-12 w-12 text-accent mb-3 animate-bounce" />
+                 <p className="text-xl font-bold text-foreground">Suelta tu factura o recibo aquí</p>
+                 <p className="mt-1 text-sm font-medium text-muted">Archivos PDF, PNG, JPG aceptados</p>
                </div>
              </div>
           )}
 
-          <div className="flex-none px-5 py-3.5 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between bg-zinc-50/50 dark:bg-zinc-900/50">
+          <div className="flex-none px-5 py-3.5 border-b border-border flex items-center justify-between bg-surface-secondary">
             <div>
-              <h2 className="text-[15px] font-semibold text-zinc-800 dark:text-zinc-200 flex items-center gap-2">Asistente Virtual (CFO)</h2>
-              <p className="text-[12px] text-zinc-500 dark:text-zinc-400 mt-0.5">Haz consultas o arrastra documentos al panel.</p>
+              <h2 className="text-[15px] font-semibold text-foreground flex items-center gap-2">Asistente Virtual (CFO)</h2>
+              <p className="text-[12px] text-muted mt-0.5">Haz consultas o arrastra documentos al panel.</p>
             </div>
             {demoMode ? (
               <span className="rounded-md border border-amber-400 bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
@@ -1375,7 +1731,7 @@ export function ChatClient({
             ) : null}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-5 flex flex-col custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-5 flex flex-col scroll-panel bg-background">
             {showDemoDebug ? (
               <div className="mb-4 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-100 shrink-0">
                 DEMO DEBUG → process.env.DEMO_MODE: {demoModeRawEnv} | demoMode(): {String(demoMode)}
@@ -1413,6 +1769,317 @@ export function ChatClient({
                         });
                       }}
                     />
+                    {messageItem.role === "assistant" &&
+                      messageItem.recommended_actions &&
+                      messageItem.recommended_actions.length > 0 && (
+                        <div className="mt-3 space-y-2 ml-0 max-w-[95%]">
+                          {messageItem.recommended_actions.map((action) => {
+                            const matchedInvoice = invoices.find((inv) => inv.id === action.invoice_id);
+                            const feedback = actionFeedback[action.invoice_id];
+                            const isScheduled = action.payment_status === "scheduled" || matchedInvoice?.payment_status === "scheduled";
+                            const scheduleLabel = isScheduled ? "Reprogramar" : "Programar";
+                            const confLevel = action.confidence ?? "review";
+                            const confBadgeStyles: Record<ConfidenceLevel, string> = {
+                              safe: "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300",
+                              review: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300",
+                              blocked: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300",
+                            };
+                            const confLabels: Record<ConfidenceLevel, string> = {
+                              safe: "Seguro",
+                              review: "Revisar",
+                              blocked: "Bloqueado",
+                            };
+                            const isBlocked = confLevel === "blocked";
+
+                            return (
+                              <div
+                                key={action.invoice_id}
+                                className="flex flex-col gap-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/60 p-3"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 truncate">
+                                      {action.supplier_name}
+                                    </p>
+                                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                                      {action.total_cop !== null ? formatCop(action.total_cop) : "Monto desconocido"}
+                                      {action.due_date ? ` · Vence: ${formatDateOnly(action.due_date)}` : ""}
+                                    </p>
+                                    {action.consequence_if_ignored && (
+                                      <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+                                        Si no actúas: {action.consequence_if_ignored}
+                                      </p>
+                                    )}
+                                    {action.recommended_resolution && (
+                                      <p className="text-[11px] text-blue-600 dark:text-blue-400 mt-0.5">
+                                        Qué hacer: {action.recommended_resolution}
+                                      </p>
+                                    )}
+                                    {action.readiness_score != null && (
+                                      <p className={`text-[11px] mt-0.5 ${action.readiness_level === "critical" ? "text-red-600 dark:text-red-400" : action.readiness_level === "warning" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                                        Estado: {action.readiness_score}/100 — {action.readiness_level === "critical" ? "Riesgo alto" : action.readiness_level === "warning" ? "Requiere atención" : "Bastante preparada"}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <div className="flex gap-1.5 shrink-0">
+                                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${confBadgeStyles[confLevel]}`}>
+                                      {confLabels[confLevel]}
+                                    </span>
+                                  </div>
+                                </div>
+                                {!matchedInvoice ? (
+                                  <p className="text-xs text-zinc-400 dark:text-zinc-500 italic">
+                                    Factura no sincronizada. Recarga la lista.
+                                  </p>
+                                ) : isBlocked ? (
+                                  <p className="text-xs text-red-500 dark:text-red-400 italic">
+                                    Datos incompletos — no se puede ejecutar esta acción.
+                                  </p>
+                                ) : (
+                                  <div className="flex gap-2 flex-wrap">
+                                    {action.available_actions.includes("pay_now") && (
+                                      <Button
+                                        type="button"
+                                        variant="primary"
+                                        size="sm"
+                                        className="text-xs px-3"
+                                        disabled={updatingPaymentInvoiceId === action.invoice_id}
+                                        onClick={() => {
+                                          const result = dispatchAction("pay_now", action.invoice_id);
+                                          setActionFeedback((prev) => ({ ...prev, [action.invoice_id]: result.message }));
+                                        }}
+                                      >
+                                        Pagar ahora
+                                      </Button>
+                                    )}
+                                    {action.available_actions.includes("schedule_payment") && (
+                                      confLevel === "safe" ? (
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="text-xs px-3 border-emerald-400 dark:border-emerald-600 text-emerald-700 dark:text-emerald-300"
+                                          disabled={updatingPaymentInvoiceId === action.invoice_id}
+                                          onClick={() => {
+                                            setConfirmAction({
+                                              type: "schedule_individual",
+                                              invoice_id: action.invoice_id,
+                                              supplier_name: action.supplier_name,
+                                              total_cop: action.total_cop,
+                                              due_date: action.due_date,
+                                            });
+                                            setConfirmPhase("confirm");
+                                          }}
+                                        >
+                                          Programar ahora
+                                        </Button>
+                                      ) : (
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="text-xs px-3"
+                                          disabled={updatingPaymentInvoiceId === action.invoice_id}
+                                          onClick={() => {
+                                            const result = dispatchAction("schedule_payment", action.invoice_id);
+                                            setActionFeedback((prev) => ({ ...prev, [action.invoice_id]: result.message }));
+                                          }}
+                                        >
+                                          {scheduleLabel}
+                                        </Button>
+                                      )
+                                    )}
+                                    {action.available_actions.includes("review_invoice") && (
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="text-xs px-3"
+                                        onClick={() => {
+                                          const result = dispatchAction("review_invoice", action.invoice_id);
+                                          setActionFeedback((prev) => ({ ...prev, [action.invoice_id]: result.message }));
+                                        }}
+                                      >
+                                        Ver factura
+                                      </Button>
+                                    )}
+                                    {action.available_actions.includes("upload_receipt") && (
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="text-xs px-3"
+                                        onClick={() => {
+                                          const result = dispatchAction("upload_receipt", action.invoice_id);
+                                          setActionFeedback((prev) => ({ ...prev, [action.invoice_id]: result.message }));
+                                        }}
+                                      >
+                                        Subir comprobante
+                                      </Button>
+                                    )}
+                                  </div>
+                                )}
+                                {feedback && (
+                                  <p className="text-[11px] font-medium text-blue-600 dark:text-blue-400 animate-pulse">
+                                    {feedback}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    {/* Bulk recommendation cards */}
+                    {messageItem.role === "assistant" &&
+                      messageItem.bulk_recommendations &&
+                      messageItem.bulk_recommendations.length > 0 && (
+                        <div className="mt-3 space-y-2 ml-0 max-w-[95%]">
+                          {messageItem.bulk_recommendations.map((rec) => {
+                            const borderColor =
+                              rec.overall_confidence === "safe"
+                                ? "border-emerald-300 dark:border-emerald-700"
+                                : "border-amber-300 dark:border-amber-700";
+                            const confBadge =
+                              rec.overall_confidence === "safe"
+                                ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
+                                : "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300";
+                            const confLabel = rec.overall_confidence === "safe" ? "Seguro" : "Revisar antes";
+
+                            return (
+                              <div
+                                key={rec.kind}
+                                className={`flex flex-col gap-2 rounded-lg border-2 border-dashed ${borderColor} bg-zinc-50 dark:bg-zinc-800/60 p-3`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                      {rec.title}
+                                    </p>
+                                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                                      {rec.description}
+                                    </p>
+                                    {rec.recommended_resolution && (
+                                      <p className="text-[11px] text-blue-600 dark:text-blue-400 mt-0.5">
+                                        Qué hacer: {rec.recommended_resolution}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${confBadge}`}>
+                                    {confLabel}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px] text-zinc-400 dark:text-zinc-500">
+                                  {rec.confidence_summary.safe_count > 0 && (
+                                    <span className="text-emerald-600 dark:text-emerald-400">{rec.confidence_summary.safe_count} segura{rec.confidence_summary.safe_count !== 1 ? "s" : ""}</span>
+                                  )}
+                                  {rec.confidence_summary.review_count > 0 && (
+                                    <span className="text-amber-600 dark:text-amber-400">{rec.confidence_summary.review_count} a revisar</span>
+                                  )}
+                                </div>
+                                {rec.kind === "schedule_group" && rec.overall_confidence === "safe" ? (
+                                  <Button
+                                    type="button"
+                                    variant="primary"
+                                    size="sm"
+                                    className="text-xs px-3 w-fit"
+                                    onClick={() => {
+                                      setConfirmAction({
+                                        type: "schedule_bulk",
+                                        invoice_ids: rec.invoice_ids,
+                                        count: rec.count,
+                                        total_cop: rec.total_cop,
+                                        title: rec.title,
+                                      });
+                                      setConfirmPhase("confirm");
+                                    }}
+                                  >
+                                    Ejecutar lote
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    type="button"
+                                    variant={rec.kind === "schedule_group" ? "primary" : "outline"}
+                                    size="sm"
+                                    className="text-xs px-3 w-fit"
+                                    onClick={() => {
+                                      try {
+                                        sessionStorage.setItem(
+                                          "vu_bulk_prefill",
+                                          JSON.stringify({ kind: rec.kind, invoice_ids: rec.invoice_ids }),
+                                        );
+                                      } catch { /* ignore */ }
+                                      router.push("/dashboard");
+                                    }}
+                                  >
+                                    {rec.kind === "schedule_group" ? "Programar en lote" : "Revisar en lote"}
+                                  </Button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    {/* Weekly plan card */}
+                    {messageItem.role === "assistant" &&
+                      messageItem.weekly_plan &&
+                      (messageItem.weekly_plan.this_week.must_pay.length > 0 ||
+                       messageItem.weekly_plan.this_week.should_schedule.length > 0 ||
+                       messageItem.weekly_plan.this_week.should_review.length > 0) && (
+                        <div className="mt-3 ml-0 max-w-[95%]">
+                          <div className="rounded-lg border-2 border-dashed border-blue-300 dark:border-blue-700 bg-zinc-50 dark:bg-zinc-800/60 p-3 space-y-2">
+                            <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                              Plan de la semana
+                            </p>
+                            <div className="space-y-1.5 text-xs">
+                              {messageItem.weekly_plan.this_week.must_pay.length > 0 && (
+                                <div className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full bg-red-500 flex-none" />
+                                  <span className="text-zinc-700 dark:text-zinc-300">
+                                    {messageItem.weekly_plan.this_week.must_pay.length} por pagar
+                                    {messageItem.weekly_plan.totals.must_pay_total > 0 &&
+                                      ` (${formatCop(messageItem.weekly_plan.totals.must_pay_total)})`}
+                                  </span>
+                                </div>
+                              )}
+                              {messageItem.weekly_plan.this_week.should_schedule.length > 0 && (
+                                <div className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full bg-amber-500 flex-none" />
+                                  <span className="text-zinc-700 dark:text-zinc-300">
+                                    {messageItem.weekly_plan.this_week.should_schedule.length} por programar
+                                    {messageItem.weekly_plan.totals.upcoming_total > 0 &&
+                                      ` (${formatCop(messageItem.weekly_plan.totals.upcoming_total)})`}
+                                  </span>
+                                </div>
+                              )}
+                              {messageItem.weekly_plan.this_week.should_review.length > 0 && (
+                                <div className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full bg-blue-500 flex-none" />
+                                  <span className="text-zinc-700 dark:text-zinc-300">
+                                    {messageItem.weekly_plan.this_week.should_review.length} por revisar
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                            {messageItem.weekly_plan.cash_scenarios && (messageItem.weekly_plan.cash_scenarios.pay_urgent_only.outflow_now > 0 || messageItem.weekly_plan.cash_scenarios.pay_and_schedule.outflow_scheduled > 0) && (
+                              <div className="space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                                <p>Solo lo urgente: <span className="font-medium text-red-600 dark:text-red-400">-{formatCop(messageItem.weekly_plan.cash_scenarios.pay_urgent_only.outflow_now)}</span></p>
+                                {messageItem.weekly_plan.cash_scenarios.pay_and_schedule.outflow_scheduled > 0 && (
+                                  <p>+ programar todo: <span className="font-medium text-red-600 dark:text-red-400">-{formatCop(messageItem.weekly_plan.cash_scenarios.pay_and_schedule.outflow_now + messageItem.weekly_plan.cash_scenarios.pay_and_schedule.outflow_scheduled)}</span></p>
+                                )}
+                              </div>
+                            )}
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="text-xs px-3 w-fit"
+                              onClick={() => router.push("/dashboard")}
+                            >
+                              Ver plan completo
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                   </li>
                 );
               })}
@@ -1426,13 +2093,13 @@ export function ChatClient({
             <div ref={messagesEndRef} />
           </div>
 
-          <div className="flex-none p-4 pb-5 border-t border-zinc-100 dark:border-zinc-800 bg-white dark:bg-zinc-900/80">
+          <div className="flex-none p-4 pb-5 border-t border-border bg-surface">
             {messages.length === 0 && (
               <div className="mb-4 space-y-2">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">Sugerencias rápidas</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Sugerencias rápidas</p>
                 <div className="flex flex-wrap gap-2">
                   {exampleQuestions.map((q) => (
-                    <button key={q} type="button" onClick={() => void sendMessage(q)} disabled={isSending} className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-[5px] text-[12px] font-medium text-zinc-600 transition hover:border-zinc-300 hover:bg-zinc-100 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300">
+                    <button key={q} type="button" onClick={() => void sendMessage(q)} disabled={isSending} className="rounded-full border border-border bg-surface-secondary px-3 py-[5px] text-[12px] font-medium text-muted transition hover:border-accent/30 hover:bg-accent-soft disabled:opacity-60">
                       {q}
                     </button>
                   ))}
@@ -1445,7 +2112,7 @@ export function ChatClient({
                  onChange={(event) => setInput(event.target.value)}
                  placeholder="Escribe tu mensaje..."
                  title="Mensaje para el CFO Virtual"
-                 className="flex-1 rounded-lg border border-zinc-300 px-4 py-2.5 text-[14px] text-zinc-900 outline-none focus:border-zinc-500 focus:ring-2 focus:ring-blue-500/20 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 shadow-sm transition-all"
+                 className="flex-1 rounded-lg border border-border px-4 py-2.5 text-[14px] text-foreground bg-surface-secondary outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-sm transition-all"
                  disabled={isSending}
                />
                <Button type="submit" variant="primary" size="md" disabled={isSending} className="px-6 rounded-lg font-medium">
@@ -1456,25 +2123,44 @@ export function ChatClient({
         </div>
 
         {/* Columna Derecha: Tablero de Acción (40% - lg:col-span-2) */}
-        <div className={`${mobileTab === "datos" ? "flex" : "hidden"} px-4 lg:px-0 lg:col-span-2 lg:flex flex-col min-h-0 overflow-y-auto pb-10 custom-scrollbar`}>
-          
+        <div className={`${mobileTab === "datos" ? "flex" : "hidden"} px-4 lg:px-0 lg:col-span-2 lg:flex flex-col min-h-0`}>
+
+          {/* Right panel tabs (desktop) */}
+          <div className="flex-none hidden lg:block pb-3">
+            <Tabs
+              value={rightTab}
+              onChange={(value) => setRightTab(value as "urgente" | "facturas" | "fiscal")}
+              items={[
+                { value: "urgente", label: "Urgente" },
+                { value: "facturas", label: "Facturas" },
+                { value: "fiscal", label: "Ficha Fiscal" },
+              ]}
+            />
+          </div>
+
+          <div className="flex-1 overflow-y-auto scroll-panel pb-10">
+
+          {(rightTab === "urgente" || !rightTab) && (
+          <div className={`${rightTab === "urgente" ? "" : "hidden lg:hidden"}`}>
           <div className="mb-4">
             <TaxTimeline />
           </div>
-          
-          <div className="flex flex-col gap-5">
+          </div>
+          )}
+
+          <div className={`${rightTab === "facturas" ? "" : "hidden lg:hidden"} flex flex-col gap-5`}>
             <div>
-              <h2 className="text-lg font-bold tracking-tight text-zinc-900 dark:text-zinc-100 flex items-center gap-2 mb-3 px-1">
-                <div className="bg-blue-100 dark:bg-blue-900/30 p-1.5 rounded-md">
-                  <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <h2 className="text-lg font-bold tracking-tight text-foreground flex items-center gap-2 mb-3 px-1">
+                <div className="bg-accent-soft p-1.5 rounded-md">
+                  <FileText className="w-4 h-4 text-accent" />
                 </div>
                 Bandeja de Acciones
               </h2>
               
             <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-4 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 bg-white dark:bg-zinc-950 shadow-sm relative">
+              <div className="flex flex-col gap-4 border border-border rounded-xl p-4 bg-surface shadow-sm relative">
                 <div className="flex flex-wrap lg:flex-nowrap items-center justify-between gap-3">
-                  <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Facturas Pendientes</h3>
+                  <h3 className="font-semibold text-foreground">Facturas Pendientes</h3>
                   <Button type="button" variant="outline" size="sm" onClick={handleInvoicePickerClick} disabled={isUploadingInvoice}>
                     {isUploadingInvoice ? "Subiendo..." : "Añadir"}
                   </Button>
@@ -1538,14 +2224,27 @@ export function ChatClient({
                 <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No hay facturas cargadas.</p>
               ) : (
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  {invoices.map((invoice) => {
+                  {[...invoices]
+                    .sort((a, b) => {
+                      // Paid invoices go to the bottom
+                      if (a.payment_status === "paid" && b.payment_status !== "paid") return 1;
+                      if (a.payment_status !== "paid" && b.payment_status === "paid") return -1;
+                      // Then sort by due_date ascending (overdue first)
+                      const aDate = getInvoiceDueDate(a);
+                      const bDate = getInvoiceDueDate(b);
+                      if (!aDate && !bDate) return 0;
+                      if (!aDate) return 1;
+                      if (!bDate) return -1;
+                      return new Date(aDate).getTime() - new Date(bDate).getTime();
+                    })
+                    .map((invoice) => {
                     const extractionStatus = getInvoiceDisplayStatus(invoice);
                     const dueDate = getInvoiceDueDate(invoice);
-                    // Compare dueDate with today
                     const today = new Date();
                     today.setHours(0, 0, 0, 0);
                     let dueColorClass = "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
-                    let dueLabel = "Al d�a";
+                    let dueLabel = "Al dia";
+                    let diffDays: number | null = null;
                     if (invoice.payment_status === "paid") {
                       dueColorClass = "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
                       dueLabel = "Pagada";
@@ -1553,16 +2252,16 @@ export function ChatClient({
                       const dDate = new Date(dueDate);
                       dDate.setHours(0, 0, 0, 0);
                       const diffTime = dDate.getTime() - today.getTime();
-                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                      diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
                       if (diffDays < 0) {
                         dueColorClass = "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
-                        dueLabel = "Vencida";
-                      } else if (diffDays <= 5) {
+                        dueLabel = `Vencida (${Math.abs(diffDays)}d)`;
+                      } else if (diffDays <= 7) {
                         dueColorClass = "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400";
-                        dueLabel = "Vence pronto";
+                        dueLabel = `${diffDays}d restantes`;
                       } else {
                         dueColorClass = "bg-zinc-100 text-zinc-700 dark:bg-zinc-900/30 dark:text-zinc-400";
-                        dueLabel = "Al d�a";
+                        dueLabel = `${diffDays}d restantes`;
                       }
                     }
 
@@ -1575,11 +2274,24 @@ export function ChatClient({
                           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
                             <FileText className="h-5 w-5" />
                           </div>
+                          <div className="flex flex-wrap gap-1">
                           <span
                             className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${dueColorClass}`}
                           >
                             {dueLabel}
                           </span>
+                          {invoice.data_quality_status !== "ok" && (
+                            <span
+                              className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                                invoice.data_quality_status === "incomplete"
+                                  ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                                  : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                              }`}
+                            >
+                              {invoice.data_quality_status === "incomplete" ? "Incompleta" : "Sospechosa"}
+                            </span>
+                          )}
+                          </div>
                         </div>
 
                         <div className="mb-4">
@@ -1598,6 +2310,16 @@ export function ChatClient({
                           <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                             Vence: {formatDateOnly(dueDate)}
                           </div>
+                          {invoice.data_quality_status !== "ok" && invoice.data_quality_flags && (
+                            <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">
+                              {[
+                                invoice.data_quality_flags.missing_due_date && "Sin vencimiento",
+                                invoice.data_quality_flags.missing_supplier && "Sin proveedor",
+                                invoice.data_quality_flags.suspect_amount && "Monto dudoso",
+                                invoice.data_quality_flags.low_confidence && "Baja confianza",
+                              ].filter(Boolean).join(" · ")}
+                            </p>
+                          )}
                         </div>
 
                         <div className="mt-auto flex flex-col gap-2">
@@ -1682,6 +2404,15 @@ export function ChatClient({
                               </Button>
                             )}
                           </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="w-full text-xs"
+                            onClick={() => setDetailsInvoice(invoice)}
+                          >
+                            Ver detalles / Editar
+                          </Button>
                         </div>
                       </Card>
                     );
@@ -1691,39 +2422,127 @@ export function ChatClient({
 
               {detailsInvoice ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                  <div className="w-full max-w-2xl rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                  <div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-lg border border-border bg-surface p-4 shadow-xl scroll-panel">
                     <div className="mb-3 flex items-center justify-between">
-                      <h4 className="text-sm font-semibold">Detalle de extracción</h4>
-                      <Button type="button" variant="ghost" size="sm" onClick={() => setDetailsInvoice(null)}>
-                        Cerrar
-                      </Button>
+                      <h4 className="text-sm font-semibold">
+                        {editingInvoice ? "Editar factura" : "Detalle de extracción"}
+                      </h4>
+                      <div className="flex items-center gap-2">
+                        {!editingInvoice ? (
+                          <Button type="button" variant="outline" size="sm" onClick={() => openEditMode(detailsInvoice)}>
+                            Editar
+                          </Button>
+                        ) : null}
+                        <Button type="button" variant="ghost" size="sm" onClick={closeDetailsModal}>
+                          Cerrar
+                        </Button>
+                      </div>
                     </div>
 
-                    <div className="space-y-2 text-sm">
-                      <div><span className="font-medium">Proveedor:</span> {String(getInvoiceExtractedField(detailsInvoice, "supplier_name") ?? detailsInvoice.supplier_name ?? "—")}</div>
-                      <div><span className="font-medium">NIT:</span> {String(getInvoiceExtractedField(detailsInvoice, "supplier_tax_id") ?? "—")}</div>
-                      <div><span className="font-medium">Factura #:</span> {String(getInvoiceExtractedField(detailsInvoice, "invoice_number") ?? "—")}</div>
-                      <div><span className="font-medium">Fecha emisión:</span> {String(getInvoiceExtractedField(detailsInvoice, "issue_date") ?? "—")}</div>
-                      <div><span className="font-medium">Vence:</span> {String(getInvoiceExtractedField(detailsInvoice, "due_date") ?? getInvoiceDueDate(detailsInvoice) ?? "—")}</div>
-                      <div><span className="font-medium">Subtotal:</span> {(() => { const v = getInvoiceExtractedField(detailsInvoice, "subtotal_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
-                      <div><span className="font-medium">IVA:</span> {(() => { const v = getInvoiceExtractedField(detailsInvoice, "iva_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
-                      <div><span className="font-medium">Total:</span> {detailsInvoice.total_cop !== null ? formatCop(detailsInvoice.total_cop) : (() => { const v = getInvoiceExtractedField(detailsInvoice, "total_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
-                      <div><span className="font-medium">Moneda:</span> {String(getInvoiceExtractedField(detailsInvoice, "currency") ?? "—")}</div>
-                    </div>
+                    {invoiceEditMessage ? (
+                      <p className={`mb-3 text-xs font-medium ${invoiceEditMessage.startsWith("Error") ? "text-red-500" : "text-emerald-600"}`}>
+                        {invoiceEditMessage}
+                      </p>
+                    ) : null}
 
-                    <div className="mt-4 rounded-md border border-zinc-200 p-3 text-xs dark:border-zinc-700">
+                    {detailsInvoice.data_quality_status !== "ok" ? (
+                      <div className={`mb-3 rounded-md px-3 py-2 text-xs ${detailsInvoice.data_quality_status === "incomplete" ? "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300" : "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"}`}>
+                        Estado: {detailsInvoice.data_quality_status === "incomplete" ? "Incompleta" : "Sospechosa"}
+                        {detailsInvoice.data_quality_flags ? ` — ${Object.entries(detailsInvoice.data_quality_flags).filter(([, v]) => v).map(([k]) => k.replace(/_/g, " ")).join(", ")}` : ""}
+                      </div>
+                    ) : null}
+
+                    {detailsInvoice.vat_status && detailsInvoice.vat_status !== "sin_iva" ? (
+                      <div className={`mb-3 rounded-md px-3 py-2 text-xs flex items-center gap-2 ${
+                        detailsInvoice.vat_status === "iva_usable"
+                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                          : detailsInvoice.vat_status === "iva_en_revision"
+                            ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                            : "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300"
+                      }`}>
+                        <span className={`inline-block w-2 h-2 rounded-full ${
+                          detailsInvoice.vat_status === "iva_usable" ? "bg-emerald-500"
+                          : detailsInvoice.vat_status === "iva_en_revision" ? "bg-amber-500"
+                          : "bg-red-500"
+                        }`} />
+                        IVA: {detailsInvoice.vat_status === "iva_usable" ? "Usable" : detailsInvoice.vat_status === "iva_en_revision" ? "En revisión" : "No usable"}
+                        {detailsInvoice.vat_reason ? ` — ${detailsInvoice.vat_reason}` : ""}
+                      </div>
+                    ) : null}
+
+                    {editingInvoice ? (
+                      <div className="space-y-3 text-sm">
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted">Proveedor</label>
+                          <input type="text" value={editSupplier} onChange={(e) => setEditSupplier(e.target.value)} className="w-full border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground rounded-md" disabled={savingInvoiceEdit} />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted">Total COP</label>
+                          <input type="number" value={editTotal} onChange={(e) => setEditTotal(e.target.value)} className="w-full border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground rounded-md" disabled={savingInvoiceEdit} />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted">Vencimiento</label>
+                          <input type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} className="w-full border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground rounded-md" disabled={savingInvoiceEdit} />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted">Número de factura</label>
+                          <input type="text" value={editInvoiceNumber} onChange={(e) => setEditInvoiceNumber(e.target.value)} className="w-full border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground rounded-md" disabled={savingInvoiceEdit} />
+                        </div>
+                        <div className="flex gap-2 pt-1">
+                          <Button type="button" variant="primary" size="sm" onClick={handleSaveInvoiceEdit} disabled={savingInvoiceEdit}>
+                            {savingInvoiceEdit ? "Guardando..." : "Guardar"}
+                          </Button>
+                          <Button type="button" variant="ghost" size="sm" onClick={() => { setEditingInvoice(false); setInvoiceEditMessage(null); }} disabled={savingInvoiceEdit}>
+                            Cancelar
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 text-sm">
+                        <div><span className="font-medium">Proveedor:</span> {String(getInvoiceExtractedField(detailsInvoice, "supplier_name") ?? detailsInvoice.supplier_name ?? "—")}</div>
+                        <div><span className="font-medium">NIT:</span> {String(getInvoiceExtractedField(detailsInvoice, "supplier_tax_id") ?? "—")}</div>
+                        <div><span className="font-medium">Factura #:</span> {String(getInvoiceExtractedField(detailsInvoice, "invoice_number") ?? detailsInvoice.invoice_number ?? "—")}</div>
+                        <div><span className="font-medium">Fecha emisión:</span> {String(getInvoiceExtractedField(detailsInvoice, "issue_date") ?? "—")}</div>
+                        <div><span className="font-medium">Vence:</span> {String(getInvoiceExtractedField(detailsInvoice, "due_date") ?? getInvoiceDueDate(detailsInvoice) ?? "—")}</div>
+                        <div><span className="font-medium">Subtotal:</span> {(() => { const v = getInvoiceExtractedField(detailsInvoice, "subtotal_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
+                        <div><span className="font-medium">IVA:</span> {(() => { const v = getInvoiceExtractedField(detailsInvoice, "iva_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
+                        <div><span className="font-medium">Total:</span> {detailsInvoice.total_cop !== null ? formatCop(detailsInvoice.total_cop) : (() => { const v = getInvoiceExtractedField(detailsInvoice, "total_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
+                        <div><span className="font-medium">Moneda:</span> {String(getInvoiceExtractedField(detailsInvoice, "currency") ?? "—")}</div>
+                      </div>
+                    )}
+
+                    <div className="mt-4 rounded-md border border-border p-3 text-xs">
                       <p className="mb-2 font-semibold">Confidence</p>
                       <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
                         {Object.entries(getInvoiceConfidence(detailsInvoice)).map(([key, value]) => (
                           <div key={key} className="flex items-center justify-between gap-2">
-                            <span className="text-zinc-500 dark:text-zinc-400">{key}</span>
+                            <span className="text-muted">{key}</span>
                             <span className="font-medium">{value.toFixed(2)}</span>
                           </div>
                         ))}
                         {Object.keys(getInvoiceConfidence(detailsInvoice)).length === 0 ? (
-                          <p className="text-zinc-500 dark:text-zinc-400">Sin confidence disponible.</p>
+                          <p className="text-muted">Sin confidence disponible.</p>
                         ) : null}
                       </div>
+                    </div>
+
+                    {/* Activity timeline */}
+                    <div className="mt-4 rounded-md border border-border p-3 text-xs">
+                      <p className="mb-2 font-semibold flex items-center gap-1.5">
+                        <History className="w-3.5 h-3.5 text-muted" />
+                        Historial
+                      </p>
+                      {isLoadingActivity ? (
+                        <p className="text-muted animate-pulse">Cargando...</p>
+                      ) : activityLog.length === 0 ? (
+                        <p className="text-muted">Sin actividad registrada.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {activityLog.map((entry) => (
+                            <ActivityTimelineRow key={entry.id} entry={entry} />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1731,7 +2550,7 @@ export function ChatClient({
 
               {scheduleInvoice ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                  <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                  <div className="w-full max-w-md rounded-lg border border-border bg-surface p-4 shadow-xl">
                     <div className="mb-3 flex items-center justify-between">
                       <h4 className="text-sm font-semibold">Programar pago</h4>
                       <Button
@@ -1754,7 +2573,7 @@ export function ChatClient({
                           value={schedulePaymentDate}
                           onChange={(event) => setSchedulePaymentDate(event.target.value)}
                           title="Fecha programada de pago"
-                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                          className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
                         />
                       </div>
                       <div>
@@ -1765,7 +2584,7 @@ export function ChatClient({
                             setSchedulePaymentMethod(event.target.value as "transfer" | "pse" | "cash" | "other")
                           }
                           title="Método de pago programado"
-                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                          className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
                         >
                           <option value="transfer">transfer</option>
                           <option value="pse">pse</option>
@@ -1781,7 +2600,7 @@ export function ChatClient({
                           rows={3}
                           title="Notas de pago"
                           placeholder="Notas opcionales"
-                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                          className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
                         />
                       </div>
                     </div>
@@ -1812,7 +2631,7 @@ export function ChatClient({
 
               {payLinkInvoice ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                  <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                  <div className="w-full max-w-md rounded-lg border border-border bg-surface p-4 shadow-xl">
                     <div className="mb-3 flex items-center justify-between">
                       <h4 className="text-sm font-semibold">Añadir portal/link</h4>
                       <Button
@@ -1836,7 +2655,7 @@ export function ChatClient({
                           onChange={(event) => setPayLinkPaymentUrl(event.target.value)}
                           title="Link de pago"
                           placeholder="https://..."
-                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                          className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
                         />
                       </div>
                       <div>
@@ -1847,7 +2666,7 @@ export function ChatClient({
                           onChange={(event) => setPayLinkSupplierPortalUrl(event.target.value)}
                           title="Portal del proveedor"
                           placeholder="https://..."
-                          className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                          className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
                         />
                       </div>
                     </div>
@@ -1878,7 +2697,7 @@ export function ChatClient({
 
               {receiptsInvoice ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                  <div className="w-full max-w-lg rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                  <div className="w-full max-w-lg rounded-lg border border-border bg-surface p-4 shadow-xl">
                     <div className="mb-3 flex items-center justify-between">
                       <h4 className="text-sm font-semibold">Comprobantes</h4>
                       <Button
@@ -1928,19 +2747,21 @@ export function ChatClient({
 
             </div>
 
-            <div className="mt-8 border-t border-zinc-200 dark:border-zinc-800 pt-6">
-               <details className="group border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-sm bg-white dark:bg-zinc-900 overflow-hidden">
-                 <summary className="font-semibold text-[14px] cursor-pointer list-none flex items-center justify-between bg-zinc-50 dark:bg-zinc-800/80 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors px-5 py-4">
+          </div>
+
+            <div className={`${rightTab === "fiscal" ? "" : "hidden lg:hidden"}`}>
+               <details open className="group border border-border rounded-xl shadow-sm bg-surface overflow-hidden">
+                 <summary className="font-semibold text-[14px] cursor-pointer list-none flex items-center justify-between bg-surface-secondary hover:bg-surface-secondary/80 transition-colors px-5 py-4">
                    Ficha Fiscal & Estimación
                    <span className="transition duration-300 group-open:-rotate-180">
                      <svg fill="none" height="20" shape-rendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="20"><path d="M6 9l6 6 6-6"></path></svg>
                    </span>
                  </summary>
-                 <div className="p-5 border-t border-zinc-200 dark:border-zinc-800 space-y-6">
+                 <div className="p-5 border-t border-border space-y-6">
                     <div>
-                       <h3 className="text-[14px] font-semibold text-zinc-800 dark:text-zinc-200 mb-3">Provisión estimada al cierre de mes</h3>
+                       <h3 className="text-[14px] font-semibold text-foreground mb-3">Provisión estimada al cierre de mes</h3>
                        {!isLoadingEstimate && estimate ? (
-                          <div className="space-y-2.5 text-[14px] bg-zinc-50/50 dark:bg-zinc-950/50 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
+                          <div className="space-y-2.5 text-[14px] bg-surface-secondary p-4 rounded-xl border border-border shadow-sm">
                             <div className="flex items-center justify-between">
                               <span className="text-zinc-600 dark:text-zinc-400">Total provisión</span>
                               <span className="font-semibold">{formatCop(estimate.totalProvision)}</span>
@@ -1997,7 +2818,7 @@ export function ChatClient({
                 setRegimen(event.target.value as "simple" | "ordinario" | "unknown")
               }
               title="Seleccionar régimen fiscal"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
               disabled={isLoadingTaxData || isSavingTaxData}
             >
               <option value="unknown">Sin definir</option>
@@ -2013,7 +2834,7 @@ export function ChatClient({
                 setVatResponsible(event.target.value as "yes" | "no" | "unknown")
               }
               title="Seleccionar responsabilidad de IVA"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
               disabled={isLoadingTaxData || isSavingTaxData}
             >
               <option value="unknown">Sin definir</option>
@@ -2031,7 +2852,7 @@ export function ChatClient({
                 )
               }
               title="Seleccionar estilo de provisión"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
               disabled={isLoadingTaxData || isSavingTaxData}
             >
               <option value="conservative">Conservador</option>
@@ -2045,7 +2866,7 @@ export function ChatClient({
               value={municipality}
               onChange={(event) => setMunicipality(event.target.value)}
               title="Municipio principal de operación"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
               placeholder="Ej: Medellin"
               disabled={isLoadingTaxData || isSavingTaxData}
             />
@@ -2082,6 +2903,60 @@ export function ChatClient({
         </SectionCard>
 
         <SectionCard
+          title="Datos del Mes en Curso"
+          description={`Ingresa tus datos financieros para el mes actual (${currentYear}-${currentMonth.toString().padStart(2, "0")}).`}
+          className="mt-4"
+        >
+          <Field label="Ingresos del mes (COP)" hint="Total de ingresos generados este mes.">
+            <input
+              type="number"
+              value={incomeCop}
+              onChange={(event) => setIncomeCop(event.target.value)}
+              title="Ingresos del mes"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
+              placeholder="0"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
+
+          <Field label="Gastos deducibles (COP)" hint="Gastos asociados a la operación.">
+            <input
+              type="number"
+              value={deductibleExpensesCop}
+              onChange={(event) => setDeductibleExpensesCop(event.target.value)}
+              title="Gastos deducibles del mes"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
+              placeholder="0"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
+
+          <Field label="IVA cobrado (COP)" hint="IVA facturado en ventas (si aplica).">
+            <input
+              type="number"
+              value={vatCollectedCop}
+              onChange={(event) => setVatCollectedCop(event.target.value)}
+              title="IVA cobrado del mes"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
+              placeholder="0"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
+
+          <Field label="Retenciones a favor (COP)" hint="Retefuente, reteica que te practicaron.">
+            <input
+              type="number"
+              value={withholdingsCop}
+              onChange={(event) => setWithholdingsCop(event.target.value)}
+              title="Retenciones aplicadas del mes"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
+              placeholder="0"
+              disabled={isLoadingTaxData || isSavingTaxData}
+            />
+          </Field>
+        </SectionCard>
+
+        <SectionCard
           title="Compromisos mensuales"
           description="Costos recurrentes y obligaciones operativas del negocio."
           className="mt-4"
@@ -2098,7 +2973,7 @@ export function ChatClient({
                 }
               }}
               title="Seleccionar tipo de contribuyente"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
               disabled={isLoadingTaxData || isSavingTaxData}
             >
               <option value="natural">Natural</option>
@@ -2115,7 +2990,7 @@ export function ChatClient({
                   setLegalType(event.target.value as "sas" | "ltda" | "other" | "unknown")
                 }
                 title="Seleccionar tipo legal"
-                className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
                 disabled={isLoadingTaxData || isSavingTaxData}
               >
                 <option value="sas">SAS</option>
@@ -2135,7 +3010,7 @@ export function ChatClient({
                 )
               }
               title="Seleccionar periodicidad de IVA"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-border bg-surface-secondary px-2 py-2 text-sm text-foreground"
               disabled={isLoadingTaxData || isSavingTaxData}
             >
               <option value="bimestral">Bimestral</option>
@@ -2197,7 +3072,120 @@ export function ChatClient({
 
         </div>
       </div>
+
+      {/* ── Confirmation modal for quick execution ── */}
+      {confirmAction ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg border border-border bg-surface p-4 shadow-xl">
+            <h4 className="text-sm font-semibold mb-3">
+              {confirmAction.type === "schedule_individual"
+                ? "Programar pago"
+                : `Programar ${confirmAction.count} facturas`}
+            </h4>
+
+            {confirmPhase === "confirm" && (
+              <>
+                {confirmAction.type === "schedule_individual" ? (
+                  <div className="space-y-1 text-sm text-zinc-600 dark:text-zinc-300 mb-3">
+                    <p><span className="font-medium">Proveedor:</span> {confirmAction.supplier_name}</p>
+                    <p><span className="font-medium">Monto:</span> {confirmAction.total_cop !== null ? formatCop(confirmAction.total_cop) : "Desconocido"}</p>
+                    <p><span className="font-medium">Fecha:</span> {confirmAction.due_date ? formatDateOnly(confirmAction.due_date) : "Hoy"}</p>
+                    <p><span className="font-medium">Método:</span> Transferencia</p>
+                  </div>
+                ) : (
+                  <div className="space-y-1 text-sm text-zinc-600 dark:text-zinc-300 mb-3">
+                    <p><span className="font-medium">Facturas:</span> {confirmAction.count}</p>
+                    <p><span className="font-medium">Total:</span> {confirmAction.total_cop !== null ? formatCop(confirmAction.total_cop) : "Monto variable"}</p>
+                    <p><span className="font-medium">Método:</span> Transferencia</p>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 mb-4">
+                  <Shield className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-none" />
+                  <p className="text-xs text-emerald-700 dark:text-emerald-300">
+                    Esta acción es segura según los datos disponibles.
+                  </p>
+                </div>
+
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="ghost" size="sm" onClick={closeConfirmation}>
+                    Cancelar
+                  </Button>
+                  <Button type="button" variant="primary" size="sm" onClick={() => void executeConfirmedAction()}>
+                    Confirmar
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {confirmPhase === "running" && (
+              <div className="py-4">
+                {confirmAction.type === "schedule_bulk" && confirmProgress.total > 0 ? (
+                  <div className="space-y-2">
+                    <div className="h-2 w-full rounded-full bg-zinc-200 dark:bg-zinc-700 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+                        style={{ width: `${Math.round((confirmProgress.completed / confirmProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center">
+                      Programando... ({confirmProgress.completed}/{confirmProgress.total})
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 animate-pulse text-center">
+                    Programando...
+                  </p>
+                )}
+              </div>
+            )}
+
+            {confirmPhase === "done" && confirmResult && (
+              <div className="py-2">
+                <p className={`text-sm font-medium mb-4 ${confirmResult.success ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                  {confirmResult.message}
+                </p>
+                <div className="flex justify-end">
+                  <Button type="button" variant="primary" size="sm" onClick={closeConfirmation}>
+                    Cerrar
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
     </PageShell>
+  );
+}
+
+const activityLabels: Record<string, { label: string; icon: typeof Clock }> = {
+  uploaded: { label: "Factura subida", icon: Upload },
+  processed: { label: "Procesada por IA", icon: FileText },
+  quality_updated: { label: "Calidad actualizada", icon: Shield },
+  payment_opened: { label: "Link de pago abierto", icon: ExternalLink },
+  scheduled: { label: "Pago programado", icon: Calendar },
+  rescheduled: { label: "Pago reprogramado", icon: Calendar },
+  marked_paid: { label: "Marcada como pagada", icon: CreditCard },
+  receipt_uploaded: { label: "Comprobante subido", icon: Upload },
+  manually_edited: { label: "Editada manualmente", icon: Edit3 },
+};
+
+function ActivityTimelineRow({ entry }: { entry: ActivityLogItem }) {
+  const info = activityLabels[entry.activity] ?? { label: entry.activity, icon: Clock };
+  const Icon = info.icon;
+  const date = new Date(entry.created_at);
+  const formatted = date.toLocaleDateString("es-CO", { day: "numeric", month: "short" }) + " " + date.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div className="flex items-start gap-2">
+      <Icon className="w-3.5 h-3.5 text-muted mt-0.5 flex-none" />
+      <div className="flex-1 min-w-0">
+        <span className="text-foreground">{info.label}</span>
+        <span className="text-muted ml-2">{formatted}</span>
+      </div>
+    </div>
   );
 }
 

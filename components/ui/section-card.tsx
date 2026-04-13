@@ -9,11 +9,11 @@ type SectionCardProps = {
 
 export function SectionCard({ title, description, children, className }: SectionCardProps) {
   return (
-    <div className={`rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 ${className ?? ""}`.trim()}>
+    <div className={`rounded-xl border border-border bg-surface p-5 shadow-sm ${className ?? ""}`.trim()}>
       <div className="mb-3">
-        <h3 className="text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">{title}</h3>
+        <h3 className="text-sm font-semibold tracking-tight text-foreground">{title}</h3>
         {description ? (
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{description}</p>
+          <p className="mt-1 text-xs text-muted">{description}</p>
         ) : null}
       </div>
       {children}

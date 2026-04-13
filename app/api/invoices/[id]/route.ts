@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { computeDataQuality } from "@/lib/invoices/computeDataQuality";
+import { computeVatStatus } from "@/lib/invoices/computeVatStatus";
+import { logInvoiceActivity } from "@/lib/invoices/logInvoiceActivity";
 
 type InvoicePatchContext = {
   params: Promise<{
@@ -12,6 +15,7 @@ type PaymentStatus = "unpaid" | "scheduled" | "paid";
 type PaymentMethod = "transfer" | "pse" | "cash" | "other";
 
 type InvoicePatchPayload = {
+  // Payment fields
   payment_status?: PaymentStatus;
   scheduled_payment_date?: string | null;
   paid_at?: string | null;
@@ -20,6 +24,11 @@ type InvoicePatchPayload = {
   payment_url?: string | null;
   supplier_portal_url?: string | null;
   last_payment_opened_at?: string | null;
+  // Data fields (manual edit)
+  supplier_name?: string | null;
+  total_cop?: number | null;
+  due_date?: string | null;
+  invoice_number?: string | null;
 };
 
 function parseOptionalHttpUrl(value: unknown): string | null {
@@ -111,11 +120,15 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
     "payment_url",
     "supplier_portal_url",
     "last_payment_opened_at",
+    "supplier_name",
+    "total_cop",
+    "due_date",
+    "invoice_number",
   ];
 
   const hasInvalidKeys = payloadKeys.some((key) => !allowedKeys.includes(key as keyof InvoicePatchPayload));
   if (hasInvalidKeys) {
-    return NextResponse.json({ error: "Solo se permiten campos de pago." }, { status: 400 });
+    return NextResponse.json({ error: "Campo no permitido en el payload." }, { status: 400 });
   }
 
   const paymentStatus = rawPayload.payment_status;
@@ -166,7 +179,7 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
 
   const { data: currentInvoice, error: currentInvoiceError } = await supabase
     .from("invoices")
-    .select("id, user_id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at")
+    .select("id, user_id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at, supplier_name, total_cop, due_date, invoice_number, subtotal_cop, iva_cop, extraction_confidence, data_quality_status")
     .eq("id", invoiceId)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -228,12 +241,83 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
     updatePayload.last_payment_opened_at = lastPaymentOpenedAt ?? null;
   }
 
+  // --- Data field edits ---
+  const dataFieldKeys = ["supplier_name", "total_cop", "due_date", "invoice_number"] as const;
+  const hasDataFieldEdit = dataFieldKeys.some((k) => rawPayload[k] !== undefined);
+
+  if (rawPayload.supplier_name !== undefined) {
+    updatePayload.supplier_name = typeof rawPayload.supplier_name === "string" ? rawPayload.supplier_name.trim() || null : null;
+  }
+  if (rawPayload.total_cop !== undefined) {
+    const num = Number(rawPayload.total_cop);
+    updatePayload.total_cop = Number.isFinite(num) ? num : null;
+  }
+  if (rawPayload.due_date !== undefined) {
+    updatePayload.due_date = parseDateOnlyOrNull(rawPayload.due_date);
+  }
+  if (rawPayload.invoice_number !== undefined) {
+    updatePayload.invoice_number = typeof rawPayload.invoice_number === "string" ? rawPayload.invoice_number.trim() || null : null;
+  }
+
+  // Recalculate data quality when data fields change
+  if (hasDataFieldEdit) {
+    const finalSupplier = updatePayload.supplier_name !== undefined ? updatePayload.supplier_name as string | null : currentInvoice.supplier_name;
+    const finalTotal = updatePayload.total_cop !== undefined ? updatePayload.total_cop as number | null : (typeof currentInvoice.total_cop === "number" ? currentInvoice.total_cop : null);
+    const finalDueDate = updatePayload.due_date !== undefined ? updatePayload.due_date as string | null : currentInvoice.due_date;
+
+    const confidence = (() => {
+      const ec = currentInvoice.extraction_confidence;
+      if (ec && typeof ec === "object" && typeof (ec as Record<string, unknown>).overall === "number") {
+        return (ec as Record<string, unknown>).overall as number;
+      }
+      return null;
+    })();
+
+    const { status, flags } = computeDataQuality({
+      confidence,
+      supplier_name: finalSupplier,
+      total_cop: finalTotal,
+      subtotal_cop: typeof currentInvoice.subtotal_cop === "number" ? currentInvoice.subtotal_cop : null,
+      iva_cop: typeof currentInvoice.iva_cop === "number" ? currentInvoice.iva_cop : null,
+      due_date: finalDueDate,
+    });
+
+    updatePayload.data_quality_status = status;
+    updatePayload.data_quality_flags = flags;
+  }
+
+  // --- VAT recalculation ---
+  const needsVatRecalc = hasDataFieldEdit || paymentStatus !== undefined;
+  if (needsVatRecalc) {
+    const { count: receiptsCount } = await supabase
+      .from("invoice_receipts")
+      .select("id", { count: "exact", head: true })
+      .eq("invoice_id", invoiceId);
+
+    const effectiveQuality = (updatePayload.data_quality_status ?? currentInvoice.data_quality_status ?? null) as "ok" | "suspect" | "incomplete" | null;
+    const effectiveIva = typeof currentInvoice.iva_cop === "number" ? currentInvoice.iva_cop : null;
+    const effectivePaymentStatus = (updatePayload.payment_status ?? currentInvoice.payment_status ?? null) as string | null;
+
+    const vatResult = computeVatStatus({
+      iva_cop: effectiveIva,
+      payment_status: effectivePaymentStatus,
+      receipts_count: receiptsCount ?? 0,
+      data_quality_status: effectiveQuality,
+    });
+
+    updatePayload.vat_status = vatResult.vat_status;
+    updatePayload.vat_reason = vatResult.vat_reason;
+    updatePayload.vat_amount_usable_cop = vatResult.vat_amount_usable_cop;
+    updatePayload.vat_amount_review_cop = vatResult.vat_amount_review_cop;
+    updatePayload.vat_amount_blocked_cop = vatResult.vat_amount_blocked_cop;
+  }
+
   const { data: updatedInvoice, error: updateError } = await supabase
     .from("invoices")
     .update(updatePayload)
     .eq("id", invoiceId)
     .eq("user_id", user.id)
-    .select("id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at")
+    .select("id, supplier_name, invoice_number, total_cop, due_date, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at, data_quality_status, data_quality_flags, vat_status, vat_reason")
     .maybeSingle();
 
   if (updateError) {
@@ -242,6 +326,54 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
 
   if (!updatedInvoice) {
     return NextResponse.json({ error: "Factura no encontrada." }, { status: 404 });
+  }
+
+  // --- Activity logging ---
+  const prevStatus = currentInvoice.payment_status as string;
+
+  if (hasDataFieldEdit) {
+    await logInvoiceActivity(supabase, {
+      invoice_id: invoiceId,
+      user_id: user.id,
+      activity: "manually_edited",
+      metadata: { fields: dataFieldKeys.filter((k) => rawPayload[k] !== undefined) },
+    });
+    if (updatePayload.data_quality_status && updatePayload.data_quality_status !== currentInvoice.data_quality_status) {
+      await logInvoiceActivity(supabase, {
+        invoice_id: invoiceId,
+        user_id: user.id,
+        activity: "quality_updated",
+        metadata: { from: currentInvoice.data_quality_status, to: updatePayload.data_quality_status },
+      });
+    }
+  }
+
+  if (paymentStatus === "paid" && prevStatus !== "paid") {
+    await logInvoiceActivity(supabase, {
+      invoice_id: invoiceId,
+      user_id: user.id,
+      activity: "marked_paid",
+      metadata: { source: "manual" },
+    });
+  }
+
+  if (paymentStatus === "scheduled") {
+    const wasAlreadyScheduled = prevStatus === "scheduled";
+    await logInvoiceActivity(supabase, {
+      invoice_id: invoiceId,
+      user_id: user.id,
+      activity: wasAlreadyScheduled ? "rescheduled" : "scheduled",
+      metadata: { date: nextScheduledPaymentDate },
+    });
+  }
+
+  if (rawPayload.last_payment_opened_at !== undefined) {
+    await logInvoiceActivity(supabase, {
+      invoice_id: invoiceId,
+      user_id: user.id,
+      activity: "payment_opened",
+      metadata: { payment_url: updatePayload.payment_url ?? currentInvoice.payment_url },
+    });
   }
 
   return NextResponse.json({ invoice: updatedInvoice });

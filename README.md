@@ -23,14 +23,14 @@ SUPABASE_ANON_KEY=tu_supabase_anon_key
 NEXT_PUBLIC_SUPABASE_URL=tu_supabase_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=tu_supabase_anon_key
 GEMINI_API_KEY=tu_gemini_api_key
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-1.5-flash-001
 DEMO_MODE=false
 DEBUG_TAX=false
 WIX_EMBED_ORIGIN=
 ```
 
 Modelos de ejemplo:
-- GEMINI_MODEL=gemini-1.5-flash
+- GEMINI_MODEL=gemini-1.5-flash-001
 - GEMINI_MODEL=gemini-2.0-flash (ejemplo barato)
 
 4. En Supabase Authentication > URL Configuration, agrega tu URL de callback:
@@ -170,7 +170,7 @@ Respuesta:
 
 Notas:
 - El endpoint usa Gemini con un system prompt fijo para Ventanilla Única.
-- El modelo se configura con GEMINI_MODEL (si no existe, usa gemini-1.5-flash).
+- El modelo se configura con GEMINI_MODEL (si no existe, usa gemini-1.5-flash-001).
 - Longitud maxima de mensaje: 2000 caracteres (`MAX_MESSAGE_LENGTH`).
 - Si se supera, responde `400` con `{ "error": "Message too long" }`.
 - Antes de generar respuesta, incluye los últimos 10 mensajes de la conversación como contexto.

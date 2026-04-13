@@ -6,7 +6,19 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "smoke:data-quality": "tsx scripts/smoke-data-quality.ts",
+    "backfill:data-quality": "tsx scripts/backfill-data-quality.ts",
+    "backfill:vat-status": "tsx scripts/backfill-vat-status.ts",
+    "audit:vat-status": "tsx scripts/audit-vat-status.ts",
+    "check:vat-consistency": "tsx scripts/check-vat-consistency.ts",
+    "export:review-invoices": "tsx scripts/export-review-invoices.ts",
+    "explain:invoice": "tsx scripts/explain-invoice-status.ts",
+    "recompute:invoice": "tsx scripts/recompute-invoice-status.ts",
+    "seed:sandbox-company": "tsx scripts/seed-sandbox-company.ts",
+    "reset:sandbox-company": "tsx scripts/reset-sandbox-company.ts",
+    "test:review-queue-consistency": "tsx scripts/test-review-queue-consistency.ts",
+    "capture:readiness-snapshot": "tsx scripts/capture-readiness-snapshot.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -31,6 +43,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
+    "tsx": "^4",
     "typescript": "^5"
   }
 }

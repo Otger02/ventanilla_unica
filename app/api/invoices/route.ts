@@ -19,12 +19,13 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 2. Consultar Base de Datos
+    // 2. Consultar Base de Datos — ordenar por vencimiento para priorizar pagos
     const { data: invoices, error: dbError } = await supabase
       .from("invoices")
       .select("*")
-      .eq("user_id", user.id) // Aseguramos que solo traiga las del usuario
-      .order("created_at", { ascending: false }); // Las más nuevas primero
+      .eq("user_id", user.id)
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("created_at", { ascending: false });
 
     if (dbError) {
       console.error("🔥 [GET /api/invoices] Error de Supabase:", dbError.message);

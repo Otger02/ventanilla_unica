@@ -45,8 +45,8 @@ export function TaxTimeline() {
 
   if (loading) {
     return (
-      <div className="animate-pulse flex space-x-4 bg-zinc-100 p-4 rounded-md dark:bg-zinc-800/50 mb-4 h-16 items-center">
-        <div className="h-4 bg-zinc-300 dark:bg-zinc-700 rounded w-5/6"></div>
+      <div className="animate-pulse flex space-x-4 bg-surface-secondary p-4 rounded-md mb-4 h-16 items-center">
+        <div className="h-4 bg-border rounded w-5/6"></div>
       </div>
     );
   }
@@ -79,7 +79,7 @@ export function TaxTimeline() {
 
   return (
     <div className="mb-6">
-      <h2 className="text-sm font-semibold mb-2 text-zinc-700 dark:text-zinc-300">Próximos Vencimientos DIAN</h2>
+      <h2 className="text-sm font-semibold mb-2 text-foreground">Próximos Vencimientos DIAN</h2>
       {error ? (
         <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md dark:bg-red-900/30 dark:text-red-400">
           {error}

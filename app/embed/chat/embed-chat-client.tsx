@@ -93,13 +93,11 @@ function formatAssistantMarkdown(raw: string): string {
   return formatted.trim();
 }
 
-export function EmbedChatClient({ theme, title }: EmbedChatClientProps) {
+export function EmbedChatClient({ theme: _theme, title }: EmbedChatClientProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
-
-  const isDark = theme === "dark";
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -150,19 +148,15 @@ export function EmbedChatClient({ theme, title }: EmbedChatClientProps) {
 
   return (
     <div
-      className={`flex h-screen flex-col p-3 ${
-        isDark ? "bg-zinc-950 text-zinc-100" : "bg-white text-zinc-900"
-      }`}
+      className="flex h-screen flex-col p-3 bg-background text-foreground"
     >
       {title ? <h1 className="pb-2 text-sm font-semibold">{title}</h1> : null}
 
       <div
-        className={`flex-1 overflow-y-auto rounded-md border p-3 ${
-          isDark ? "border-zinc-800 bg-zinc-900" : "border-zinc-200 bg-zinc-50"
-        }`}
+        className="flex-1 overflow-y-auto rounded-md border p-3 scroll-panel border-border bg-surface-secondary"
       >
         {messages.length === 0 ? (
-          <p className={`text-xs ${isDark ? "text-zinc-400" : "text-zinc-500"}`}>
+          <p className="text-xs text-muted">
             Escribe tu primera consulta.
           </p>
         ) : (
@@ -178,21 +172,15 @@ export function EmbedChatClient({ theme, title }: EmbedChatClientProps) {
                 key={`${messageItem.role}-${index}`}
                 className={`max-w-[92%] rounded-md px-2.5 py-2 text-xs ${
                   messageItem.role === "user"
-                    ? "ml-auto bg-blue-600 text-white"
-                    : isDark
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "bg-zinc-100 text-zinc-900"
+                    ? "ml-auto bg-accent text-white"
+                    : "bg-surface text-foreground"
                 }`}
               >
                 {messageItem.role === "user" ? (
                   <p className="whitespace-pre-wrap">{messageItem.content}</p>
                 ) : (
                   <div
-                    className={`max-w-none whitespace-normal prose prose-sm [&_p]:my-2 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:p-3 [&_a]:break-all [&_a]:underline ${
-                      isDark
-                        ? "prose-invert [&_pre]:bg-zinc-950 [&_pre]:text-zinc-100 [&_a]:text-blue-300"
-                        : "[&_pre]:bg-zinc-900 [&_pre]:text-zinc-100 [&_a]:text-blue-600"
-                    }`}
+                    className="max-w-none whitespace-normal prose prose-sm prose-invert [&_p]:my-2 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:bg-zinc-900 [&_pre]:text-zinc-100 [&_a]:break-all [&_a]:underline [&_a]:text-accent"
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
@@ -207,7 +195,7 @@ export function EmbedChatClient({ theme, title }: EmbedChatClientProps) {
                           return (
                             <code
                               {...props}
-                              className="rounded bg-zinc-200 px-1 py-0.5 text-[0.9em] text-zinc-900 dark:bg-zinc-700 dark:text-zinc-100"
+                              className="rounded bg-surface-secondary px-1 py-0.5 text-[0.9em] text-foreground"
                             >
                               {children}
                             </code>
@@ -238,20 +226,12 @@ export function EmbedChatClient({ theme, title }: EmbedChatClientProps) {
           value={input}
           onChange={(event) => setInput(event.target.value)}
           placeholder="Escribe..."
-          className={`flex-1 rounded-md border px-3 py-2 text-xs outline-none ${
-            isDark
-              ? "border-zinc-700 bg-zinc-900 text-zinc-100"
-              : "border-zinc-300 bg-white text-zinc-900"
-          }`}
+          className="flex-1 rounded-md border px-3 py-2 text-xs outline-none border-border bg-surface-secondary text-foreground focus:border-accent focus:ring-1 focus:ring-accent/20"
           disabled={isSending}
         />
         <button
           type="submit"
-          className={`rounded-md px-3 py-2 text-xs font-medium ${
-            isDark
-              ? "bg-zinc-100 text-zinc-900 hover:bg-zinc-300"
-              : "bg-zinc-900 text-white hover:bg-zinc-700"
-          } disabled:cursor-not-allowed disabled:opacity-60`}
+          className="rounded-md px-3 py-2 text-xs font-medium bg-accent text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={isSending}
         >
           {isSending ? "..." : "Enviar"}

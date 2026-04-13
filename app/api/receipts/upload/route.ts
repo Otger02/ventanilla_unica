@@ -6,6 +6,8 @@ import { NextResponse } from "next/server";
 
 import { getGeminiConfig } from "@/lib/ai/gemini";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { computeVatStatus } from "@/lib/invoices/computeVatStatus";
+import { logInvoiceActivity } from "@/lib/invoices/logInvoiceActivity";
 
 const MAX_RECEIPT_SIZE_BYTES = 15 * 1024 * 1024;
 
@@ -184,7 +186,7 @@ export async function POST(request: Request) {
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
-    .select("id, user_id, payment_status, paid_at, total_cop, supplier_name, invoice_number, due_date")
+    .select("id, user_id, payment_status, paid_at, total_cop, supplier_name, invoice_number, due_date, iva_cop, data_quality_status")
     .eq("id", invoiceId)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -304,6 +306,44 @@ export async function POST(request: Request) {
   if (updateInvoiceError) {
     return NextResponse.json({ error: "Comprobante subido, pero no se pudo actualizar la factura." }, { status: 500 });
   }
+
+  await logInvoiceActivity(supabase, {
+    invoice_id: invoiceId!,
+    user_id: user!.id,
+    activity: "receipt_uploaded",
+    metadata: { receipt_id: insertedReceipt.id, filename: file.name },
+  });
+  await logInvoiceActivity(supabase, {
+    invoice_id: invoiceId!,
+    user_id: user!.id,
+    activity: "marked_paid",
+    metadata: { source: "receipt_upload" },
+  });
+
+  // --- VAT recalculation after receipt upload ---
+  const { count: newReceiptsCount } = await supabase
+    .from("invoice_receipts")
+    .select("id", { count: "exact", head: true })
+    .eq("invoice_id", invoiceId!);
+
+  const vatResult = computeVatStatus({
+    iva_cop: typeof invoice.iva_cop === "number" ? invoice.iva_cop : null,
+    payment_status: "paid",
+    receipts_count: newReceiptsCount ?? 0,
+    data_quality_status: (invoice.data_quality_status as "ok" | "suspect" | "incomplete" | null) ?? null,
+  });
+
+  await supabase
+    .from("invoices")
+    .update({
+      vat_status: vatResult.vat_status,
+      vat_reason: vatResult.vat_reason,
+      vat_amount_usable_cop: vatResult.vat_amount_usable_cop,
+      vat_amount_review_cop: vatResult.vat_amount_review_cop,
+      vat_amount_blocked_cop: vatResult.vat_amount_blocked_cop,
+    })
+    .eq("id", invoiceId!)
+    .eq("user_id", user!.id);
 
   return NextResponse.json({
     status: "created",

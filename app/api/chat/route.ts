@@ -9,6 +9,11 @@ import { ventanillaUnicaSystemPrompt } from "@/lib/ai/systemPrompt";
 import { getGeminiConfig } from "@/lib/ai/gemini";
 import { KB_CFO_SNIPPETS } from "@/lib/kb/cfo-estrategias";
 import { getPayablesSummary } from "@/lib/invoices/getPayablesSummary";
+import { classifyInvoices, getTopPriorityActions, type ReviewQueueItem, type ReviewAction, type ConfidenceLevel, type ConfidenceResult } from "@/lib/invoices/getReviewQueue";
+import { computePortfolioReadiness } from "@/lib/invoices/computeReadinessScore";
+import { getReceiptsCounts } from "@/lib/invoices/getReceiptsCounts";
+import { getBulkRecommendations, type BulkRecommendation } from "@/lib/invoices/getBulkRecommendations";
+import { buildPaymentPlan, type WeeklyPaymentPlan } from "@/lib/invoices/getPaymentPlan";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { calculateMonthlyProvisionCO } from "@/lib/tax/calculators/colombia/monthlyProvision";
 
@@ -116,6 +121,7 @@ type FinancialIntentReason =
   | "renta_focus"
   | "invoices_priority"
   | "keyword_match"
+  | "greeting_weekly_plan"
   | "no_financial_keyword";
 
 type CurrentTaxCalculation =
@@ -503,6 +509,14 @@ function detectFinancialIntent(
   );
 
   if (!matchedKeyword) {
+    const greetings = [
+      "hola", "como voy", "que tal", "buenos dias", "buenas tardes",
+      "buenas noches", "como estoy", "como va", "como estamos",
+      "que hay", "hey", "buenas",
+    ];
+    if (greetings.some((g) => normalizedMessage.includes(g))) {
+      return { enabled: true, reason: "greeting_weekly_plan", matchedKeyword: null };
+    }
     return {
       enabled: false,
       reason: "no_financial_keyword",
@@ -1075,6 +1089,145 @@ async function getCurrentTaxCalculation(
   };
 }
 
+type RecommendedAction = {
+  invoice_id: string;
+  supplier_name: string;
+  invoice_number: string | null;
+  total_cop: number | null;
+  due_date: string | null;
+  payment_status: "unpaid" | "scheduled";
+  action_reason: string;
+  available_actions: ReviewAction[];
+  confidence: ConfidenceLevel;
+  action_confidence: Record<string, ConfidenceResult>;
+  consequence_if_ignored: string;
+  recommended_resolution: string;
+  readiness_score: number;
+  readiness_level: string;
+  readiness_reason: string;
+};
+
+function worstConfidence(
+  map: Record<string, ConfidenceResult>,
+): ConfidenceLevel {
+  const levels = Object.values(map).map((r) => r.level);
+  if (levels.includes("blocked")) return "blocked";
+  if (levels.includes("review")) return "review";
+  return "safe";
+}
+
+function buildRecommendedActions(
+  invoices: { id: string; supplier_name: string | null; invoice_number: string | null; total_cop: number | null; due_date: string | null; payment_status: string; payment_url: string | null; supplier_portal_url: string | null; scheduled_payment_date: string | null; data_quality_status?: string }[],
+  financialIntentEnabled: boolean,
+  reviewQueueItems?: ReviewQueueItem[],
+): RecommendedAction[] {
+  if (!financialIntentEnabled) return [];
+
+  // Use review queue items as primary source when available (richer priority + reason)
+  if (reviewQueueItems && reviewQueueItems.length > 0) {
+    const actionableItems = reviewQueueItems
+      .filter((item) => item.payment_status !== "paid" || item.available_actions.includes("upload_receipt"))
+      .slice(0, 3);
+
+    if (actionableItems.length > 0) {
+      return actionableItems.map((item) => ({
+        invoice_id: item.invoice_id,
+        supplier_name: item.supplier_name?.trim() || "Proveedor desconocido",
+        invoice_number: item.invoice_number,
+        total_cop: item.total_cop,
+        due_date: item.due_date,
+        payment_status: (item.payment_status === "paid" ? "unpaid" : item.payment_status ?? "unpaid") as "unpaid" | "scheduled",
+        action_reason: item.reason,
+        available_actions: item.available_actions,
+        confidence: worstConfidence(item.action_confidence),
+        action_confidence: item.action_confidence,
+        consequence_if_ignored: item.consequence_if_ignored,
+        recommended_resolution: item.recommended_resolution,
+        readiness_score: item.readiness_score,
+        readiness_level: item.readiness_level,
+        readiness_reason: item.readiness_reason,
+      }));
+    }
+  }
+
+  // Fallback: existing scoring logic when no review queue items
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+
+  const pending = invoices
+    .filter((inv) => inv.payment_status === "unpaid" || inv.payment_status === "scheduled")
+    .filter((inv) => inv.data_quality_status !== "incomplete");
+  if (pending.length === 0) return [];
+
+  // Priority tiers: unpaid overdue=6, unpaid <=7d=5, unpaid rest=4, scheduled overdue=3, scheduled <=7d=2, scheduled rest=1
+  const scored = pending.map((inv) => {
+    const isScheduled = inv.payment_status === "scheduled";
+    const baseTier = isScheduled ? 0 : 3; // unpaid gets +3 offset
+
+    let dueTier = 1; // rest
+    let reason = isScheduled ? "ya programada" : "pendiente";
+    let diffDays: number | null = null;
+
+    if (inv.due_date) {
+      const due = new Date(inv.due_date + "T00:00:00");
+      const diffMs = due.getTime() - now.getTime();
+      diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+      if (diffDays < 0) {
+        dueTier = 3; // overdue
+        reason = `vencida hace ${Math.abs(diffDays)} dias`;
+      } else if (diffDays <= 7) {
+        dueTier = 2; // soon
+        reason = `vence en ${diffDays} dias`;
+      } else {
+        dueTier = 1;
+        reason = `vence en ${diffDays} dias`;
+      }
+    }
+
+    if (isScheduled) {
+      if (inv.scheduled_payment_date) {
+        const schedDate = new Date(inv.scheduled_payment_date + "T00:00:00");
+        const schedLabel = schedDate.toLocaleDateString("es-CO", { day: "numeric", month: "long" });
+        if (diffDays !== null && diffDays < 0) {
+          reason = `programada para el ${schedLabel}, vencida`;
+        } else if (diffDays !== null && diffDays <= 7) {
+          reason = `programada para el ${schedLabel}, vence en ${diffDays}d`;
+        } else {
+          reason = `programada para el ${schedLabel}`;
+        }
+      } else {
+        reason = diffDays !== null && diffDays < 0
+          ? `ya programada, vencida hace ${Math.abs(diffDays)}d`
+          : "ya programada";
+      }
+    }
+
+    const priority = baseTier + dueTier;
+    return { inv, priority, reason };
+  });
+
+  scored.sort((a, b) => b.priority - a.priority);
+
+  return scored.slice(0, 3).map(({ inv, reason }) => ({
+    invoice_id: inv.id,
+    supplier_name: inv.supplier_name?.trim() || "Proveedor desconocido",
+    invoice_number: inv.invoice_number,
+    total_cop: inv.total_cop,
+    due_date: inv.due_date,
+    payment_status: inv.payment_status as "unpaid" | "scheduled",
+    action_reason: reason,
+    available_actions: ["pay_now", "schedule_payment", "review_invoice"] as ReviewAction[],
+    confidence: "review" as ConfidenceLevel,
+    action_confidence: {},
+    consequence_if_ignored: "",
+    recommended_resolution: "",
+    readiness_score: 100,
+    readiness_level: "healthy",
+    readiness_reason: "",
+  }));
+}
+
 export async function POST(request: NextRequest) {
   try {
     const clientIp = getClientIp(request.headers);
@@ -1231,13 +1384,41 @@ export async function POST(request: NextRequest) {
     );
 
     let pendingInvoicesList: { supplier_name: string, total_cop: number, due_date: string, payment_status: string }[] = [];
+    let allInvoicesForActions: { id: string, supplier_name: string | null, invoice_number: string | null, total_cop: number | null, due_date: string | null, payment_status: string, payment_url: string | null, supplier_portal_url: string | null, scheduled_payment_date: string | null }[] = [];
+    let allInvoicesRaw: { id: string, supplier_name: string | null, invoice_number: string | null, total_cop: number | null, iva_cop: number | null, due_date: string | null, payment_status: string | null, data_quality_status: string | null, vat_status: string | null }[] = [];
+    let dataQualityWarningCount = 0;
+    let dataQualityIncompleteCount = 0;
+    let dataQualitySuspectCount = 0;
     if (authenticatedUserId) {
       const { data: rawInvoices } = await supabase
         .from("invoices")
-        .select("supplier_name, total_cop, due_date, payment_status")
+        .select("id, supplier_name, invoice_number, total_cop, due_date, payment_status, payment_url, supplier_portal_url, scheduled_payment_date, data_quality_status, vat_status, iva_cop")
         .eq("user_id", authenticatedUserId)
-        .order("due_date", { ascending: true });
-      if (rawInvoices) pendingInvoicesList = rawInvoices;
+        .order("due_date", { ascending: true, nullsFirst: false });
+      if (rawInvoices) {
+        allInvoicesRaw = rawInvoices as any;
+        dataQualityIncompleteCount = rawInvoices.filter((inv: any) => inv.data_quality_status === "incomplete").length;
+        dataQualitySuspectCount = rawInvoices.filter((inv: any) => inv.data_quality_status === "suspect").length;
+        dataQualityWarningCount = dataQualityIncompleteCount + dataQualitySuspectCount;
+        pendingInvoicesList = rawInvoices.filter((inv: any) => inv.data_quality_status !== "incomplete");
+        allInvoicesForActions = rawInvoices.filter((inv: any) => inv.data_quality_status !== "incomplete");
+      }
+    }
+
+    // --- VAT summary for chat context ---
+    let vatUsableCop = 0;
+    let vatReviewCop = 0;
+    let vatBlockedCop = 0;
+    let vatReviewCount = 0;
+    let vatBlockedCount = 0;
+    let vatUsableCount = 0;
+    if (authenticatedUserId && allInvoicesForActions.length > 0) {
+      for (const inv of allInvoicesForActions as any[]) {
+        const ivaCop = typeof inv.iva_cop === "number" ? inv.iva_cop : 0;
+        if (inv.vat_status === "iva_usable") { vatUsableCop += ivaCop; vatUsableCount++; }
+        else if (inv.vat_status === "iva_en_revision") { vatReviewCop += ivaCop; vatReviewCount++; }
+        else if (inv.vat_status === "iva_no_usable") { vatBlockedCop += ivaCop; vatBlockedCount++; }
+      }
     }
 
     const taxIntent = detectTaxIntent(message);
@@ -1251,6 +1432,32 @@ export async function POST(request: NextRequest) {
     const kbSnippetIdsUsed = kbSnippetsForModel.map((snippet) => snippet.id);
     let calcActualPayload: CurrentTaxCalculation | null = null;
     let invoicesPrioritySummary: InvoicesPrioritySummary | null = null;
+    let weeklyPlanPayload: WeeklyPaymentPlan | null = null;
+
+    // --- Review queue classification (reuses already-fetched invoices) ---
+    let reviewQueueItems: ReviewQueueItem[] = [];
+    if (financialIntent.enabled && authenticatedUserId && allInvoicesRaw.length > 0) {
+      const receiptCounts = await getReceiptsCounts(
+        supabase,
+        allInvoicesRaw.map((inv) => inv.id),
+      );
+      const rq = classifyInvoices(allInvoicesRaw, receiptCounts);
+      reviewQueueItems = rq.items;
+    }
+
+    // Fetch readiness delta for prompt context
+    let readinessDelta: number | null = null;
+    if (financialIntent.enabled && authenticatedUserId) {
+      const { data: snapRows } = await supabase
+        .from("readiness_snapshots")
+        .select("portfolio_score")
+        .eq("user_id", authenticatedUserId)
+        .order("created_at", { ascending: false })
+        .limit(2);
+      if (snapRows && snapRows.length >= 2) {
+        readinessDelta = snapRows[0].portfolio_score - snapRows[1].portfolio_score;
+      }
+    }
 
     if (financialIntent.reason === "invoices_priority" && authenticatedUserId) {
       invoicesPrioritySummary = await getPayablesSummary({
@@ -1286,6 +1493,9 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           conversationId,
           reply,
+          recommended_actions: [],
+          bulk_recommendations: [],
+          weekly_plan: null,
         });
       }
     }
@@ -1364,17 +1574,21 @@ export async function POST(request: NextRequest) {
     ];
 
     if (pendingInvoicesList && pendingInvoicesList.length > 0) {
+        const invoicesForPrompt = pendingInvoicesList.map((inv: any) => ({
+          ...inv,
+          _quality_warning: inv.data_quality_status === "suspect" ? "datos sospechosos - verificar antes de decidir" : undefined,
+        }));
         promptSections.push(
           [
             "ALL_INVOICES_LIST_REAL_DATA:",
-            JSON.stringify(pendingInvoicesList, null, 2),
+            JSON.stringify(invoicesForPrompt, null, 2),
             "INSTRUCCION_FACTURAS_PENDIENTES_Y_PAGADAS:",
             "Usa esta lista para responder si el usuario pregunta 'qué facturas tengo', '¿qué debo?', 'cuánto debo' o temas relacionados con pagos.",
             "Importante: Las facturas con payment_status 'paid' ya están pagadas. Las 'unpaid' o 'scheduled' están pendientes.",
             "El CFO SIEMPRE debe incluir y decir exactamente esta frase en su respuesta: 'Has pagado $X y te faltan $Y por pagar', donde $X es la suma de las facturas pagadas y $Y es la suma de las facturas pendientes. Formatea todo en pesos colombianos.",
-            "HOY ES EL 6 DE MARZO DE 2026. Al listar facturas pendientes actúa con visión de CFO y aplica la siguiente lógica de semáforo priorizando pagos:",
-            "🔴 Vencida: Si la due_date es estricta o anterior al 6 de marzo de 2026.",
-            "🟡 Urgente: Si la due_date tiene vencimiento dentro de los próximos 5 días (hasta el 11 de marzo).",
+            `HOY ES ${new Date().toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" }).toUpperCase()}. Al listar facturas pendientes actúa con visión de CFO y aplica la siguiente lógica de semáforo priorizando pagos:`,
+            "🔴 Vencida: Si la due_date ya pasó respecto a hoy.",
+            "🟡 Urgente: Si la due_date tiene vencimiento dentro de los próximos 7 días.",
             "🟢 Al día: Si tiene más de 5 días de plazo.",
             "Responde SIEMPRE con una Tabla Markdown estructurada obligatoriamente con las siguientes columnas para las pendientes: Estatus (Emoji 🔴/🟡/🟢), Proveedor, Monto (COP), y Vencimiento.",
             "Al final de la tabla, debes calcular OBLIGATORIAMENTE el Gran Total Pendiente.",
@@ -1382,6 +1596,188 @@ export async function POST(request: NextRequest) {
           ].join("\n")
         );
       }
+
+    if (dataQualityWarningCount > 0) {
+      promptSections.push(
+        `AVISO_CALIDAD_DATOS: Hay ${dataQualityWarningCount} factura(s) con datos dudosos o incompletos (${dataQualityIncompleteCount} incompleta(s), ${dataQualitySuspectCount} sospechosa(s)). Menciona esto al usuario y sugiere que las revise antes de tomar decisiones financieras.`
+      );
+    }
+
+    // --- Review queue context for actionable responses ---
+    if (financialIntent.enabled && reviewQueueItems.length > 0) {
+      const top10 = reviewQueueItems.slice(0, 10);
+      const actionMap: Record<string, string> = {
+        pay_now: "pagar ahora",
+        review_invoice: "revisar factura",
+        upload_receipt: "subir comprobante",
+        schedule_payment: "programar pago",
+      };
+      const confidenceTag: Record<string, string> = {
+        safe: "SEGURO",
+        review: "REVISAR",
+        blocked: "BLOQUEADO",
+      };
+      const reviewLines = top10.map((item) => {
+        const supplierLabel = item.supplier_name?.trim() || "Proveedor desconocido";
+        const amountLabel = item.total_cop !== null ? formatCopForPrompt(item.total_cop) : "monto no disponible";
+        const dueLabel = item.due_date
+          ? (() => {
+              const now = new Date();
+              now.setHours(0, 0, 0, 0);
+              const due = new Date(item.due_date + "T00:00:00");
+              const diffDays = Math.ceil((due.getTime() - now.getTime()) / 86_400_000);
+              if (diffDays < 0) return `vencida hace ${Math.abs(diffDays)}d`;
+              if (diffDays === 0) return "vence hoy";
+              return `vence en ${diffDays}d`;
+            })()
+          : "sin vencimiento";
+        const actionLabel = actionMap[item.available_actions[0]] ?? item.available_actions[0];
+        const confLevel = worstConfidence(item.action_confidence);
+        const confTag = confidenceTag[confLevel] ?? "REVISAR";
+        return `- ${supplierLabel} | ${amountLabel} | ${dueLabel} | ${item.reason} | ${actionLabel} | [${confTag}] | si no actúas: ${item.consequence_if_ignored} | resolución recomendada: ${item.recommended_resolution} | readiness: ${item.readiness_score}/100 (${item.readiness_level})`;
+      });
+
+      promptSections.push(
+        [
+          "REVIEW_QUEUE:",
+          (() => {
+            const portfolio = computePortfolioReadiness(reviewQueueItems.map((i) => ({ score: i.readiness_score, level: i.readiness_level, reason: i.readiness_reason })));
+            let line = `Salud operativa global: ${portfolio.score}/100 (${portfolio.level}) — ${portfolio.breakdown.healthy} sanas, ${portfolio.breakdown.warning} con alerta, ${portfolio.breakdown.critical} críticas.`;
+            if (readinessDelta != null && readinessDelta !== 0) {
+              line += ` Tendencia: ${readinessDelta > 0 ? `+${readinessDelta}` : readinessDelta} puntos respecto al último corte (${readinessDelta > 0 ? "mejorando" : "empeorando"}).`;
+            }
+            return line;
+          })(),
+          `Hay ${reviewQueueItems.length} factura(s) que requieren atención del usuario. Las ${top10.length} más urgentes:`,
+          ...reviewLines,
+          "",
+          "INSTRUCCION_REVIEW_QUEUE:",
+          "Cuando el usuario pregunte qué revisar, qué tiene pendiente, o pida recomendaciones, usa esta cola de revisión con facturas reales.",
+          "Prioriza en el orden mostrado (ya están ordenadas por urgencia).",
+          "Para cada factura que menciones, incluye la acción recomendada específica (pagar, revisar, subir comprobante, programar).",
+          "Si hay facturas vencidas, enfatiza su urgencia.",
+          "Cada factura incluye una consecuencia si el usuario no actúa, una resolución recomendada, y un readiness score (0-100). Prioriza acciones concretas y la mejor resolución para cada caso. Evita respuestas abstractas.",
+          "Usa el readiness score como apoyo, no como verdad absoluta. Explícalo de forma simple: un score bajo significa que la factura está en mal estado operativo, uno alto que está bastante lista.",
+          "Responde con facturas concretas, NO en abstracto.",
+          "",
+          "INSTRUCCION_CONFIANZA:",
+          "Cada factura tiene un nivel de confianza entre corchetes: [SEGURO], [REVISAR], o [BLOQUEADO].",
+          "- SEGURO: datos verificados, la acción se puede ejecutar.",
+          "- REVISAR: sugiere al usuario verificar datos antes de actuar.",
+          "- BLOQUEADO: faltan datos críticos, NO recomendar ejecutar esa acción.",
+          "Usa lenguaje prudente: 'puedes hacerlo con seguridad', 'conviene revisar antes', 'no recomendable sin corregir datos'.",
+          "NUNCA ejecutes ni confirmes acciones automáticamente — solo comunica el nivel de riesgo.",
+        ].join("\n"),
+      );
+
+      // --- Bulk recommendations context ---
+      const bulkRecs = getBulkRecommendations(reviewQueueItems);
+      if (bulkRecs.length > 0) {
+        const bulkLines = bulkRecs.map((rec) => {
+          const totalLabel = rec.total_cop != null ? ` (${formatCopForPrompt(rec.total_cop)} total)` : "";
+          const confLabel = confidenceTag[rec.overall_confidence] ?? "REVISAR";
+          return `- ${rec.title}${totalLabel} [${confLabel}]`;
+        });
+        promptSections.push(
+          [
+            "ACCIONES_EN_LOTE:",
+            ...bulkLines,
+            "",
+            "INSTRUCCION_LOTE:",
+            "Si hay acciones en lote disponibles, sugiere al usuario resolverlas en grupo antes de detallar una por una.",
+            "Explica por qué conviene y menciona que puede hacerlo desde el dashboard.",
+          ].join("\n"),
+        );
+      }
+    }
+
+    // --- Weekly plan context for greetings ---
+    if (financialIntent.reason === "greeting_weekly_plan" && reviewQueueItems.length > 0) {
+      weeklyPlanPayload = buildPaymentPlan(reviewQueueItems);
+      const mp = weeklyPlanPayload.this_week.must_pay;
+      const ss = weeklyPlanPayload.this_week.should_schedule;
+      const sr = weeklyPlanPayload.this_week.should_review;
+
+      const planLines: string[] = ["PLAN_SEMANAL:", "Esta semana deberías:"];
+      if (mp.length > 0) {
+        const topMp = mp.slice(0, 3).map((i) => i.supplier_name || "Sin proveedor").join(", ");
+        planLines.push(`- Pagar ${mp.length} factura${mp.length !== 1 ? "s" : ""} (${formatCopForPrompt(weeklyPlanPayload.totals.must_pay_total)}) — vencidas o por vencer en 3 días. Principales: ${topMp}.`);
+      }
+      if (ss.length > 0) {
+        const topSs = ss.slice(0, 3).map((i) => i.supplier_name || "Sin proveedor").join(", ");
+        planLines.push(`- Programar ${ss.length} factura${ss.length !== 1 ? "s" : ""} (${formatCopForPrompt(weeklyPlanPayload.totals.upcoming_total)}) — vencen esta semana. Principales: ${topSs}.`);
+      }
+      if (sr.length > 0) {
+        planLines.push(`- Revisar ${sr.length} factura${sr.length !== 1 ? "s" : ""} con datos incompletos o sospechosos.`);
+      }
+      if (mp.length === 0 && ss.length === 0 && sr.length === 0) {
+        planLines.push("- No tienes acciones urgentes esta semana. ¡Estás al día!");
+      }
+      // Cash scenarios (conservative: only outflows, no income estimation)
+      const sc = weeklyPlanPayload.cash_scenarios;
+      if (sc.pay_and_schedule.outflow_now + sc.pay_and_schedule.outflow_scheduled > 0) {
+        planLines.push(
+          "",
+          "ESCENARIOS_DE_CAJA:",
+          `- Si no haces nada: $0 en salidas.`,
+          `- Si pagas solo lo urgente: ${formatCopForPrompt(sc.pay_urgent_only.outflow_now)} en salidas.`,
+          `- Si pagas y programas todo: ${formatCopForPrompt(sc.pay_and_schedule.outflow_now + sc.pay_and_schedule.outflow_scheduled)} en salidas.`,
+        );
+      }
+      // Top 3 critical actions
+      const top3 = getTopPriorityActions(reviewQueueItems);
+      if (top3.length > 0) {
+        planLines.push(
+          "",
+          "ACCIONES_CRITICAS:",
+          "Empieza tu respuesta mencionando estas acciones críticas (las más urgentes):",
+          ...top3.map((item) => {
+            const name = item.supplier_name?.trim() || "Sin proveedor";
+            const amount = item.total_cop !== null ? formatCopForPrompt(item.total_cop) : "monto no disponible";
+            return `- ${name} (${amount}) — readiness ${item.readiness_score}/100 — ${item.recommended_resolution}`;
+          }),
+        );
+      }
+      planLines.push(
+        "",
+        "INSTRUCCION_PLAN_SEMANAL:",
+        "El usuario te está saludando. Responde empezando por las acciones críticas, luego un resumen breve del plan semanal.",
+        "No uses formato numerado (1)-(4). Sé breve, directo y cálido.",
+        "Menciona las facturas más urgentes por nombre de proveedor y monto.",
+        "Si hay escenarios de caja, preséntalos brevemente para que el usuario entienda el impacto de cada opción.",
+        "NUNCA estimes ingresos ni prometas caja futura. Solo impacto de salidas.",
+        "Si no hay nada urgente, felicita al usuario.",
+      );
+      promptSections.push(planLines.join("\n"));
+    }
+
+    // IVA context — always inject if user has VAT data, so IVA questions can be answered
+    if (vatUsableCop > 0 || vatReviewCop > 0 || vatBlockedCop > 0) {
+      promptSections.push(
+        [
+          "RESUMEN_IVA_DESCONTABLE_CONSERVADOR:",
+          `- IVA usable (con criterios conservadores): ${formatCopForPrompt(vatUsableCop)} (${vatUsableCount} factura${vatUsableCount !== 1 ? "s" : ""})`,
+          `- IVA en revisión (faltan soportes o datos dudosos): ${formatCopForPrompt(vatReviewCop)} (${vatReviewCount} factura${vatReviewCount !== 1 ? "s" : ""})`,
+          `- IVA no usable (factura incompleta): ${formatCopForPrompt(vatBlockedCop)} (${vatBlockedCount} factura${vatBlockedCount !== 1 ? "s" : ""})`,
+          "",
+          "INSTRUCCION_IVA_CONSERVADOR:",
+          "Cuando el usuario pregunte por IVA descontable, usa SOLO estos datos reales.",
+          "NUNCA decir que el IVA ya es 100% descontable legalmente.",
+          "Usa siempre estas frases:",
+          '- "IVA usable con criterios conservadores"',
+          '- "IVA en revisión — faltan soportes o hay datos dudosos"',
+          '- "IVA no usable todavía — factura incompleta"',
+          "Formato recomendado:",
+          "## (1) Resumen IVA",
+          "## (2) Qué parte está usable",
+          "## (3) Qué parte está en revisión o bloqueada",
+          "## (4) Siguiente acción recomendada",
+          "Si hay IVA en revisión, recomendar: subir comprobante de pago o corregir datos de factura.",
+          "Si hay IVA bloqueado, recomendar: completar datos de la factura antes de considerar el IVA.",
+          "Siempre priorizar seguridad y revisión ante la duda.",
+        ].join("\n"),
+      );
+    }
 
     if (
       financialContextPayload.monthly_inputs_status === "fallback_used" &&
@@ -1524,6 +1920,32 @@ export async function POST(request: NextRequest) {
       "- TONO: Profesional, técnico y breve. Usa el Calendario 2026 y el Estatuto Tributario como si fueran tu propia memoria, sin citarlos a menos que sea necesario para dar validez (ej: \"Según el Art. X...\").",
       "- LENGUAJE SIMPLE: Nunca uses un código fiscal o contable (como 'Formulario 350') sin antes explicar que es de forma simplificada (ej: Retención en la Fuente) y qué implicaciones tiene para el negocio.",
       "- FORMATO: Manten la tabla Markdown con los emojis (🔴, 🟡, 🟢) solo cuando se listen facturas, sin textos de relleno antes o después.",
+      "",
+      "FORMATO DE RESPUESTA FINANCIERA OBLIGATORIO:",
+      "Cuando el usuario haga una pregunta sobre facturas, pagos, impuestos, provisiones, caja o tesorería, usa SIEMPRE esta estructura:",
+      "",
+      "## (1) Resumen",
+      "- Nº facturas pendientes, total pendiente, vencidas (si aplica)",
+      "- Máximo 3-4 bullets concisos",
+      "",
+      "## (2) Prioridad de pagos",
+      "- Lista clara: proveedor, monto, fecha, motivo (vence antes / crítica / impuesto DIAN)",
+      "- Si hay facturas, usar tabla Markdown con 🔴/🟡/🟢",
+      "",
+      "## (3) Impacto en caja",
+      "- Total próximos 7 días",
+      "- Total próximos 30 días",
+      "- Provisión estimada pendiente (si hay datos fiscales)",
+      "",
+      "## (4) Acción recomendada",
+      "- Instrucciones claras y ejecutables",
+      "- NO teoría fiscal larga",
+      "- Máximo 3 pasos concretos",
+      "",
+      "EXCEPCIONES al formato (1)-(4):",
+      "- Saludos simples: responder con saludo y pregunta de en qué ayudar",
+      "- Preguntas conceptuales (\"qué es IVA\"): responder directo sin estructura (1)-(4)",
+      "- Si NO hay datos financieros del usuario: pedir los datos necesarios, no inventar",
     ].join("\n");
 
     const fullPrompt = [
@@ -1689,9 +2111,22 @@ export async function POST(request: NextRequest) {
       openAiDurationMs,
     });
 
+    const recommendedActions = buildRecommendedActions(
+      allInvoicesForActions,
+      financialIntent.enabled,
+      reviewQueueItems,
+    );
+
+    const bulkRecommendations = financialIntent.enabled
+      ? getBulkRecommendations(reviewQueueItems)
+      : [];
+
     return NextResponse.json({
       conversationId,
       reply,
+      recommended_actions: recommendedActions,
+      bulk_recommendations: bulkRecommendations,
+      weekly_plan: weeklyPlanPayload,
     });
   } catch (error) {
     if (error instanceof ApiError) {

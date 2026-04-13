@@ -54,13 +54,13 @@ export function LoginForm() {
         value={email}
         onChange={(event) => setEmail(event.target.value)}
         placeholder="tu-correo@empresa.com"
-        className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
+        className="w-full rounded-md border border-border bg-surface-secondary px-3 py-2 text-sm text-foreground outline-none focus:border-accent focus:ring-1 focus:ring-accent/20"
         disabled={loading}
         required
       />
       <button
         type="submit"
-        className="w-full rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+        className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
         disabled={loading}
       >
         {loading ? "Enviando..." : "Enviar enlace"}

@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { logInvoiceActivity } from "@/lib/invoices/logInvoiceActivity";
 
 // 1. Funciones Auxiliares Mínimas (Locales)
 function sanitizeFileName(name: string) {
@@ -136,6 +137,13 @@ export async function POST(request: Request) {
       mime_type: file.type,
       size_bytes: file.size,
       sha256
+    });
+
+    await logInvoiceActivity(supabase, {
+      invoice_id: invoice.id,
+      user_id: user.id,
+      activity: "uploaded",
+      metadata: { filename: file.name },
     });
 
     return NextResponse.json({ success: true, invoice });

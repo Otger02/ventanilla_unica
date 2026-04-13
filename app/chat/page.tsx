@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 
 import { ChatClient } from "@/app/chat/chat-client";
@@ -18,10 +19,12 @@ export default async function ChatPage() {
   }
 
   return (
-    <ChatClient
-      demoMode={demoMode}
-      showDemoDebug={showDemoDebug}
-      demoModeRawEnv={demoModeRawEnv}
-    />
+    <Suspense>
+      <ChatClient
+        demoMode={demoMode}
+        showDemoDebug={showDemoDebug}
+        demoModeRawEnv={demoModeRawEnv}
+      />
+    </Suspense>
   );
 }
