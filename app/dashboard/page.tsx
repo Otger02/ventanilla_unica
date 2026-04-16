@@ -20,10 +20,13 @@ import {
   ShieldAlert,
   ShieldX,
   ClipboardList,
+  Target,
   Eye,
   Upload,
   CreditCard,
   CalendarPlus,
+  Settings2,
+  UserCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageShell } from "@/components/ui/page-shell";
@@ -36,6 +39,12 @@ import { BulkScheduleModal } from "@/components/dashboard/BulkScheduleModal";
 import type { BulkScheduleResult } from "@/hooks/useBulkSchedule";
 import { buildPaymentPlan, type WeeklyPaymentPlan } from "@/lib/invoices/getPaymentPlan";
 import { computePortfolioReadiness, type PortfolioReadiness } from "@/lib/invoices/computeReadinessScore";
+import { computeWeeklyGoals, type WeeklyGoalsSummary } from "@/lib/invoices/getWeeklyGoals";
+import { computeInactionScenarios, type InactionSummary } from "@/lib/invoices/getInactionScenarios";
+import { applyPreferencesToActions, applyPreferencesToGoals, DEFAULT_PREFERENCES, type OperatingPreferences } from "@/lib/invoices/applyOperatingPreferences";
+import { OperatingPrefsModal } from "@/components/dashboard/OperatingPrefsModal";
+import { SharedAccessSection } from "@/components/dashboard/SharedAccessSection";
+import { NotesSection } from "@/components/dashboard/NotesSection";
 
 type DashboardSummary = {
   total_unpaid_cop: number;
@@ -93,23 +102,29 @@ export default function DashboardPage() {
   const [showBulkScheduleModal, setShowBulkScheduleModal] = useState(false);
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
   const [showOnlySafe, setShowOnlySafe] = useState(false);
+  const [assignmentFilter, setAssignmentFilter] = useState<"all" | "mine" | "advisor">("all");
   const prefillDone = useRef(false);
   const [weeklyPlan, setWeeklyPlan] = useState<WeeklyPaymentPlan | null>(null);
   const [portfolioReadiness, setPortfolioReadiness] = useState<PortfolioReadiness | null>(null);
   const [topActions, setTopActions] = useState<ReviewQueueItem[]>([]);
   const [deltaScore, setDeltaScore] = useState<number | null>(null);
+  const [weeklyGoals, setWeeklyGoals] = useState<WeeklyGoalsSummary | null>(null);
+  const [inactionSummary, setInactionSummary] = useState<InactionSummary | null>(null);
+  const [operatingPrefs, setOperatingPrefs] = useState<OperatingPreferences>(DEFAULT_PREFERENCES);
+  const [showPrefsModal, setShowPrefsModal] = useState(false);
 
   // ─── Data loading (extracted so it can be called after bulk actions) ───
   const loadDashboard = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const [summaryRes, alertsRes, vatRes, reviewRes, readinessRes] = await Promise.all([
+      const [summaryRes, alertsRes, vatRes, reviewRes, readinessRes, prefsRes] = await Promise.all([
         fetch("/api/dashboard/summary"),
         fetch("/api/alerts/summary"),
         fetch("/api/vat/summary"),
         fetch("/api/invoices/review-queue"),
         fetch("/api/readiness/history"),
+        fetch("/api/operating-preferences"),
       ]);
       const summaryData = await summaryRes.json();
       if (!summaryRes.ok) throw new Error(summaryData.error || "Error cargando resumen");
@@ -126,13 +141,24 @@ export default function DashboardPage() {
         setVatSummary(vatData);
       }
 
+      // Parse operating preferences
+      let prefs = DEFAULT_PREFERENCES;
+      if (prefsRes.ok) {
+        prefs = (await prefsRes.json()) as OperatingPreferences;
+        setOperatingPrefs(prefs);
+      }
+
       if (reviewRes.ok) {
         const reviewData = (await reviewRes.json()) as { items: ReviewQueueItem[]; total: number };
         const freshItems = reviewData.items ?? [];
         setReviewQueue(freshItems);
-        setWeeklyPlan(buildPaymentPlan(freshItems));
+        const plan = buildPaymentPlan(freshItems);
+        setWeeklyPlan(plan);
         setPortfolioReadiness(computePortfolioReadiness(freshItems.map((i) => ({ score: i.readiness_score, level: i.readiness_level, reason: i.readiness_reason }))));
-        setTopActions(getTopPriorityActions(freshItems));
+        setTopActions(applyPreferencesToActions(getTopPriorityActions(freshItems), prefs));
+        const rawGoals = computeWeeklyGoals(freshItems);
+        setWeeklyGoals({ ...rawGoals, goals: applyPreferencesToGoals(rawGoals.goals, prefs) });
+        setInactionSummary(computeInactionScenarios(freshItems, plan, rawGoals));
         selection.cleanStale(new Set(freshItems.map((i) => i.invoice_id)));
       }
 
@@ -213,6 +239,21 @@ export default function DashboardPage() {
     router.push(`/chat?action=review_invoice&invoice=${first.invoice_id}`);
   }
 
+  const isAdvisor = operatingPrefs.preferred_view_mode === "advisor";
+
+  async function handleViewModeToggle(mode: "owner" | "advisor") {
+    if (operatingPrefs.preferred_view_mode === mode) return;
+    setOperatingPrefs({ ...operatingPrefs, preferred_view_mode: mode });
+    try {
+      await fetch("/api/operating-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preferred_view_mode: mode }),
+      });
+      loadDashboard();
+    } catch { /* best-effort */ }
+  }
+
   function handleExecuteWeek() {
     if (!weeklyPlan) return;
     const safeSchedule = weeklyPlan.this_week.should_schedule.filter(
@@ -258,10 +299,24 @@ export default function DashboardPage() {
             </span>
           )}
         </div>
+        <div className="flex items-center gap-1 rounded-lg border border-border bg-surface-secondary p-0.5">
+          <button
+            onClick={() => handleViewModeToggle("owner")}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${operatingPrefs.preferred_view_mode === "owner" ? "bg-surface text-foreground shadow-sm" : "text-muted hover:text-foreground"}`}
+          >
+            Propietario
+          </button>
+          <button
+            onClick={() => handleViewModeToggle("advisor")}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${operatingPrefs.preferred_view_mode === "advisor" ? "bg-surface text-foreground shadow-sm" : "text-muted hover:text-foreground"}`}
+          >
+            Asesor
+          </button>
+        </div>
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 p-6 md:p-8 space-y-8 max-w-7xl mx-auto w-full">
+      <div className="flex-1 p-6 md:p-8 flex flex-col gap-8 max-w-7xl mx-auto w-full">
         {isLoading ? (
           <div className="flex items-center justify-center py-20">
             <p className="text-sm text-muted animate-pulse">
@@ -276,7 +331,7 @@ export default function DashboardPage() {
           <>
             {/* Acciones críticas ahora */}
             {topActions.length > 0 && (
-              <div className="space-y-3">
+              <div className="space-y-3" style={{ order: isAdvisor ? 6 : 1 }}>
                 <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                   <AlertTriangle className="w-5 h-5 text-red-500" />
                   Acciones críticas ahora
@@ -327,9 +382,43 @@ export default function DashboardPage() {
               </div>
             )}
 
+            {/* Metas de esta semana */}
+            {weeklyGoals && weeklyGoals.goals.length > 0 && (
+              <div className="space-y-3" style={{ order: isAdvisor ? 7 : 2 }}>
+                <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                  <Target className="w-5 h-5 text-accent" />
+                  Metas de esta semana
+                </h2>
+                <p className="text-xs text-muted">{weeklyGoals.headline}</p>
+                <NotesSection targetType="goal" targetId={null} singleNoteMode />
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {weeklyGoals.goals.map((goal) => (
+                    <div key={goal.id} className="bg-surface border border-border rounded-xl p-4 shadow-sm flex flex-col gap-2">
+                      <p className="text-sm font-semibold text-foreground">{goal.title}</p>
+                      <p className="text-xs text-muted">{goal.description}</p>
+                      <div className="w-full bg-zinc-200 dark:bg-zinc-700 rounded-full h-1.5">
+                        <div
+                          className="bg-accent h-1.5 rounded-full transition-all"
+                          style={{ width: `${Math.round(goal.progress_ratio * 100)}%` }}
+                        />
+                      </div>
+                      <p className="text-[10px] text-muted">
+                        {goal.current_count}/{goal.target_count} completadas
+                      </p>
+                      <Link href={goal.kind === "upload_receipts" ? "/dashboard" : "/chat"} className="mt-auto">
+                        <Button variant="outline" size="sm" className="text-xs w-full">
+                          {goal.recommended_action}
+                        </Button>
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Plan de la semana */}
             {weeklyPlan && (weeklyPlan.this_week.must_pay.length > 0 || weeklyPlan.this_week.should_schedule.length > 0 || weeklyPlan.this_week.should_review.length > 0) && (
-              <div className="space-y-4">
+              <div className="space-y-4" style={{ order: isAdvisor ? 8 : 3 }}>
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                     <CalendarDays className="w-5 h-5 text-muted" />
@@ -341,6 +430,7 @@ export default function DashboardPage() {
                     </Button>
                   )}
                 </div>
+                <NotesSection targetType="weekly_plan" targetId={null} singleNoteMode />
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <WeeklyBucket
                     title="Pagar hoy"
@@ -420,8 +510,104 @@ export default function DashboardPage() {
               </div>
             )}
 
+            {/* Si no actúas esta semana */}
+            {inactionSummary && inactionSummary.scenarios.length > 0 && (
+              <div className="space-y-3" style={{ order: isAdvisor ? 5 : 4 }}>
+                <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5 text-amber-500" />
+                  Si no actúas esta semana
+                </h2>
+                <p className="text-xs text-muted">{inactionSummary.headline}</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {inactionSummary.scenarios.map((scenario) => {
+                    const sevColor = scenario.severity === "critical"
+                      ? "border-red-200 dark:border-red-900/30 bg-red-50/40 dark:bg-red-950/20"
+                      : scenario.severity === "warning"
+                        ? "border-amber-200 dark:border-amber-900/30 bg-amber-50/40 dark:bg-amber-950/20"
+                        : "border-border bg-surface";
+                    const sevTextColor = scenario.severity === "critical"
+                      ? "text-red-700 dark:text-red-300"
+                      : scenario.severity === "warning"
+                        ? "text-amber-700 dark:text-amber-300"
+                        : "text-muted";
+                    return (
+                      <div key={scenario.kind} className={`rounded-xl border p-3 ${sevColor}`}>
+                        <p className={`text-sm font-medium ${sevTextColor}`}>{scenario.title}</p>
+                        <p className="text-xs text-muted mt-0.5">{scenario.description}</p>
+                        <ul className="mt-2 space-y-1">
+                          {scenario.likely_effects.map((effect, i) => (
+                            <li key={i} className="text-[11px] text-muted flex items-start gap-1.5">
+                              <span className={`mt-0.5 w-1.5 h-1.5 rounded-full shrink-0 ${scenario.severity === "critical" ? "bg-red-400" : "bg-amber-400"}`} />
+                              {effect}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Preferencias operativas */}
+            <div className="space-y-3" style={{ order: isAdvisor ? 9 : 5 }}>
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                  <Settings2 className="w-5 h-5 text-muted" />
+                  Preferencias operativas
+                </h2>
+                <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowPrefsModal(true)}>
+                  Editar
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="bg-surface border border-border rounded-xl p-3">
+                  <p className="text-[11px] text-muted">Modo</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {operatingPrefs.preferred_view_mode === "advisor" ? "Asesor" : "Propietario"}
+                  </p>
+                </div>
+                <div className="bg-surface border border-border rounded-xl p-3">
+                  <p className="text-[11px] text-muted">Estilo</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {operatingPrefs.preferred_action_style === "conservative" ? "Conservador" : operatingPrefs.preferred_action_style === "aggressive" ? "Agresivo" : "Equilibrado"}
+                  </p>
+                </div>
+                <div className="bg-surface border border-border rounded-xl p-3">
+                  <p className="text-[11px] text-muted">Foco semanal</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {operatingPrefs.preferred_weekly_focus === "cash" ? "Caja" : operatingPrefs.preferred_weekly_focus === "compliance" ? "Cumplimiento" : operatingPrefs.preferred_weekly_focus === "cleanup" ? "Limpieza" : "—"}
+                  </p>
+                </div>
+                <div className="bg-surface border border-border rounded-xl p-3">
+                  <p className="text-[11px] text-muted">Día de programación</p>
+                  <p className="text-sm font-medium text-foreground capitalize">
+                    {operatingPrefs.preferred_schedule_day ?? "—"}
+                  </p>
+                </div>
+                <div className="bg-surface border border-border rounded-xl p-3">
+                  <p className="text-[11px] text-muted">Máx. acciones/semana</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {operatingPrefs.max_weekly_execution_count ?? "—"}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {showPrefsModal && (
+              <OperatingPrefsModal
+                current={operatingPrefs}
+                onClose={() => setShowPrefsModal(false)}
+                onSaved={(saved) => {
+                  setOperatingPrefs(saved);
+                  setShowPrefsModal(false);
+                  loadDashboard();
+                }}
+              />
+            )}
+
             {/* Row 1: KPIs principales */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6" style={{ order: isAdvisor ? 10 : 6 }}>
               {/* Total pendiente */}
               <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm flex flex-col">
                 <div className="flex items-center justify-between mb-4">
@@ -473,7 +659,7 @@ export default function DashboardPage() {
 
             {/* Salud operativa */}
             {portfolioReadiness && (
-              <div className={`bg-surface border rounded-2xl p-5 shadow-sm flex items-center gap-4 ${
+              <div style={{ order: isAdvisor ? 1 : 7 }} className={`bg-surface border rounded-2xl p-5 shadow-sm flex items-center gap-4 ${
                 portfolioReadiness.level === "critical" ? "border-red-300 dark:border-red-700" :
                 portfolioReadiness.level === "warning" ? "border-amber-300 dark:border-amber-700" :
                 "border-emerald-300 dark:border-emerald-700"
@@ -510,7 +696,7 @@ export default function DashboardPage() {
 
             {/* Alerts */}
             {alerts.length > 0 && (
-              <div className="bg-surface border border-border rounded-2xl p-5 shadow-sm">
+              <div className="bg-surface border border-border rounded-2xl p-5 shadow-sm" style={{ order: isAdvisor ? 4 : 8 }}>
                 <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
                   <Bell className="w-4 h-4 text-muted" />
                   Alertas ({alerts.length})
@@ -525,12 +711,22 @@ export default function DashboardPage() {
 
             {/* Review Queue */}
             {reviewQueue.length > 0 && (() => {
-              const filteredQueue = showOnlySafe
+              const afterSafe = showOnlySafe
                 ? reviewQueue.filter((item) => getRowConfidence(item) === "safe")
                 : reviewQueue;
+              const afterAssignment = assignmentFilter === "all"
+                ? afterSafe
+                : assignmentFilter === "mine"
+                  ? afterSafe.filter((item) => !item.assigned_to_label || item.assigned_to_label.toLowerCase() === "yo")
+                  : afterSafe.filter((item) => item.assigned_to_label?.toLowerCase() === "asesor");
+              const filteredQueue = [...afterAssignment].sort((a, b) => {
+                const aIsMine = !a.assigned_to_label || a.assigned_to_label.toLowerCase() === "yo" ? 0 : 1;
+                const bIsMine = !b.assigned_to_label || b.assigned_to_label.toLowerCase() === "yo" ? 0 : 1;
+                return aIsMine - bIsMine;
+              });
 
               return (
-              <div className="bg-surface border border-border rounded-2xl p-5 shadow-sm">
+              <div className="bg-surface border border-border rounded-2xl p-5 shadow-sm" style={{ order: isAdvisor ? 2 : 9 }}>
                 <div className="flex items-center gap-3 mb-3">
                   <input
                     type="checkbox"
@@ -556,12 +752,32 @@ export default function DashboardPage() {
                     Solo seguras
                   </label>
                 </div>
+                <div className="flex items-center gap-1.5 mb-3">
+                  {([["all", "Todas"], ["mine", "Mis tareas"], ["advisor", "Del asesor"]] as const).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                        assignmentFilter === key
+                          ? "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300"
+                          : "text-muted hover:text-foreground"
+                      }`}
+                      onClick={() => setAssignmentFilter(key)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
 
                 {bulkFeedback && (
                   <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400 mb-2 animate-pulse">
                     {bulkFeedback}
                   </p>
                 )}
+
+                <div className="mb-2">
+                  <NotesSection targetType="review_queue" targetId={null} singleNoteMode />
+                </div>
 
                 <div className="space-y-2 max-h-96 overflow-y-auto scroll-panel">
                   {filteredQueue.map((item) => (
@@ -599,7 +815,7 @@ export default function DashboardPage() {
 
             {/* IVA del mes */}
             {vatSummary && vatSummary.total_invoices_with_vat > 0 && (
-              <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm">
+              <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm" style={{ order: isAdvisor ? 3 : 10 }}>
                 <h2 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-muted" />
                   IVA del mes ({vatSummary.month})
@@ -636,7 +852,7 @@ export default function DashboardPage() {
             )}
 
             {/* Row 2: Horizonte de pagos */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6" style={{ order: 11 }}>
               <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm flex flex-col">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-medium text-muted">
@@ -667,7 +883,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Row 3: Resumen visual */}
-            <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm">
+            <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm" style={{ order: 12 }}>
               <h2 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
                 <TrendingDown className="w-5 h-5 text-muted" />
                 Panorama de Tesoreria
@@ -695,6 +911,11 @@ export default function DashboardPage() {
                   formatCOP={formatCOP}
                 />
               </div>
+            </div>
+
+            {/* Acceso compartido */}
+            <div style={{ order: 13 }}>
+              <SharedAccessSection />
             </div>
           </>
         ) : null}
@@ -874,6 +1095,11 @@ function ReviewQueueRow({ item, formatCOP, isSelected, onToggle }: { item: Revie
           }`}>
             {item.readiness_score}
           </span>
+          {item.assigned_to_label && (
+            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">
+              <UserCircle className="w-3 h-3" /> {item.assigned_to_label}
+            </span>
+          )}
         </div>
         <p className="text-xs text-muted truncate">{item.reason}</p>
         <p className="text-[11px] text-amber-600 dark:text-amber-400 truncate">

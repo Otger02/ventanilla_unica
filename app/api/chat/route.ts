@@ -11,6 +11,11 @@ import { KB_CFO_SNIPPETS } from "@/lib/kb/cfo-estrategias";
 import { getPayablesSummary } from "@/lib/invoices/getPayablesSummary";
 import { classifyInvoices, getTopPriorityActions, type ReviewQueueItem, type ReviewAction, type ConfidenceLevel, type ConfidenceResult } from "@/lib/invoices/getReviewQueue";
 import { computePortfolioReadiness } from "@/lib/invoices/computeReadinessScore";
+import { computeWeeklyGoals } from "@/lib/invoices/getWeeklyGoals";
+import { computeInactionScenarios } from "@/lib/invoices/getInactionScenarios";
+import { applyPreferencesToActions, applyPreferencesToGoals, buildPreferencesPromptSection, DEFAULT_PREFERENCES, type OperatingPreferences } from "@/lib/invoices/applyOperatingPreferences";
+import { buildNotesPromptSection } from "@/lib/notes/buildNotesPromptSection";
+import { buildAssignmentsPromptSection } from "@/lib/assignments/buildAssignmentsPromptSection";
 import { getReceiptsCounts } from "@/lib/invoices/getReceiptsCounts";
 import { getBulkRecommendations, type BulkRecommendation } from "@/lib/invoices/getBulkRecommendations";
 import { buildPaymentPlan, type WeeklyPaymentPlan } from "@/lib/invoices/getPaymentPlan";
@@ -1385,14 +1390,14 @@ export async function POST(request: NextRequest) {
 
     let pendingInvoicesList: { supplier_name: string, total_cop: number, due_date: string, payment_status: string }[] = [];
     let allInvoicesForActions: { id: string, supplier_name: string | null, invoice_number: string | null, total_cop: number | null, due_date: string | null, payment_status: string, payment_url: string | null, supplier_portal_url: string | null, scheduled_payment_date: string | null }[] = [];
-    let allInvoicesRaw: { id: string, supplier_name: string | null, invoice_number: string | null, total_cop: number | null, iva_cop: number | null, due_date: string | null, payment_status: string | null, data_quality_status: string | null, vat_status: string | null }[] = [];
+    let allInvoicesRaw: { id: string, supplier_name: string | null, invoice_number: string | null, total_cop: number | null, iva_cop: number | null, due_date: string | null, payment_status: string | null, data_quality_status: string | null, vat_status: string | null, assigned_to_label: string | null }[] = [];
     let dataQualityWarningCount = 0;
     let dataQualityIncompleteCount = 0;
     let dataQualitySuspectCount = 0;
     if (authenticatedUserId) {
       const { data: rawInvoices } = await supabase
         .from("invoices")
-        .select("id, supplier_name, invoice_number, total_cop, due_date, payment_status, payment_url, supplier_portal_url, scheduled_payment_date, data_quality_status, vat_status, iva_cop")
+        .select("id, supplier_name, invoice_number, total_cop, due_date, payment_status, payment_url, supplier_portal_url, scheduled_payment_date, data_quality_status, vat_status, iva_cop, assigned_to_label")
         .eq("user_id", authenticatedUserId)
         .order("due_date", { ascending: true, nullsFirst: false });
       if (rawInvoices) {
@@ -1459,6 +1464,33 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Fetch operating preferences
+    let operatingPrefs: OperatingPreferences = DEFAULT_PREFERENCES;
+    if (authenticatedUserId) {
+      const { data: prefsRow } = await supabase
+        .from("user_operating_preferences")
+        .select("preferred_action_style, preferred_weekly_focus, preferred_schedule_day, max_weekly_execution_count, preferred_view_mode, notes")
+        .eq("user_id", authenticatedUserId)
+        .maybeSingle();
+      if (prefsRow) {
+        operatingPrefs = prefsRow as OperatingPreferences;
+      }
+    }
+
+    // Fetch operational notes
+    let operationalNotes: { target_type: string; target_id: string | null; author_label: string; content: string; created_at: string }[] = [];
+    if (authenticatedUserId) {
+      const { data: notesRows } = await supabase
+        .from("operational_notes")
+        .select("target_type, target_id, author_label, content, created_at")
+        .eq("owner_user_id", authenticatedUserId)
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (notesRows) {
+        operationalNotes = notesRows as typeof operationalNotes;
+      }
+    }
+
     if (financialIntent.reason === "invoices_priority" && authenticatedUserId) {
       invoicesPrioritySummary = await getPayablesSummary({
         supabase,
@@ -1496,6 +1528,9 @@ export async function POST(request: NextRequest) {
           recommended_actions: [],
           bulk_recommendations: [],
           weekly_plan: null,
+          weekly_goals: null,
+          inaction_summary: null,
+          operating_preferences_active: null,
         });
       }
     }
@@ -1725,7 +1760,7 @@ export async function POST(request: NextRequest) {
         );
       }
       // Top 3 critical actions
-      const top3 = getTopPriorityActions(reviewQueueItems);
+      const top3 = applyPreferencesToActions(getTopPriorityActions(reviewQueueItems), operatingPrefs);
       if (top3.length > 0) {
         planLines.push(
           "",
@@ -1738,17 +1773,55 @@ export async function POST(request: NextRequest) {
           }),
         );
       }
+      // Weekly goals
+      const rawGoals = computeWeeklyGoals(reviewQueueItems);
+      const weeklyGoals = { ...rawGoals, goals: applyPreferencesToGoals(rawGoals.goals, operatingPrefs) };
+      if (weeklyGoals.goals.length > 0) {
+        planLines.push(
+          "",
+          "METAS_SEMANALES:",
+          weeklyGoals.headline,
+          ...weeklyGoals.goals.map((g) => `- ${g.title}: ${g.description}`),
+        );
+      }
+      // Inaction scenarios
+      const inactionData = computeInactionScenarios(reviewQueueItems, weeklyPlanPayload, weeklyGoals);
+      if (inactionData.scenarios.length > 0) {
+        planLines.push(
+          "",
+          "ESCENARIOS_DE_INACCION:",
+          inactionData.headline,
+          ...inactionData.scenarios.map((s) => `- [${s.severity}] ${s.title}: ${s.description} Efectos: ${s.likely_effects.join("; ")}`),
+        );
+      }
       planLines.push(
         "",
         "INSTRUCCION_PLAN_SEMANAL:",
-        "El usuario te está saludando. Responde empezando por las acciones críticas, luego un resumen breve del plan semanal.",
+        "El usuario te está saludando. Responde empezando por las acciones críticas, luego menciona brevemente las metas de la semana.",
         "No uses formato numerado (1)-(4). Sé breve, directo y cálido.",
         "Menciona las facturas más urgentes por nombre de proveedor y monto.",
         "Si hay escenarios de caja, preséntalos brevemente para que el usuario entienda el impacto de cada opción.",
+        "Si hay escenarios de inacción con severidad critical o warning, menciona brevemente qué pasa si el usuario no actúa esta semana.",
         "NUNCA estimes ingresos ni prometas caja futura. Solo impacto de salidas.",
         "Si no hay nada urgente, felicita al usuario.",
       );
       promptSections.push(planLines.join("\n"));
+    }
+
+    // Operating preferences context
+    if (operatingPrefs.preferred_view_mode !== "owner" || operatingPrefs.preferred_action_style !== "balanced" || operatingPrefs.preferred_weekly_focus || operatingPrefs.preferred_schedule_day || operatingPrefs.notes) {
+      promptSections.push(buildPreferencesPromptSection(operatingPrefs));
+    }
+
+    // Operational notes context
+    if (operationalNotes.length > 0) {
+      promptSections.push(buildNotesPromptSection(operationalNotes));
+    }
+
+    // Assignment responsibilities context
+    if (allInvoicesRaw.length > 0) {
+      const assignmentSection = buildAssignmentsPromptSection(allInvoicesRaw);
+      if (assignmentSection) promptSections.push(assignmentSection);
     }
 
     // IVA context — always inject if user has VAT data, so IVA questions can be answered
@@ -2121,12 +2194,23 @@ export async function POST(request: NextRequest) {
       ? getBulkRecommendations(reviewQueueItems)
       : [];
 
+    const responseGoals = reviewQueueItems.length > 0
+      ? (() => { const g = computeWeeklyGoals(reviewQueueItems); return { ...g, goals: applyPreferencesToGoals(g.goals, operatingPrefs) }; })()
+      : null;
+
     return NextResponse.json({
       conversationId,
       reply,
       recommended_actions: recommendedActions,
       bulk_recommendations: bulkRecommendations,
       weekly_plan: weeklyPlanPayload,
+      weekly_goals: responseGoals,
+      inaction_summary: reviewQueueItems.length > 0
+        ? computeInactionScenarios(reviewQueueItems, weeklyPlanPayload, responseGoals)
+        : null,
+      operating_preferences_active: operatingPrefs.preferred_view_mode !== "owner" || operatingPrefs.preferred_action_style !== "balanced" || operatingPrefs.preferred_weekly_focus
+        ? { style: operatingPrefs.preferred_action_style, focus: operatingPrefs.preferred_weekly_focus, view_mode: operatingPrefs.preferred_view_mode }
+        : null,
     });
   } catch (error) {
     if (error instanceof ApiError) {

@@ -29,6 +29,8 @@ type InvoicePatchPayload = {
   total_cop?: number | null;
   due_date?: string | null;
   invoice_number?: string | null;
+  // Assignment
+  assigned_to_label?: string | null;
 };
 
 function parseOptionalHttpUrl(value: unknown): string | null {
@@ -124,6 +126,7 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
     "total_cop",
     "due_date",
     "invoice_number",
+    "assigned_to_label",
   ];
 
   const hasInvalidKeys = payloadKeys.some((key) => !allowedKeys.includes(key as keyof InvoicePatchPayload));
@@ -179,7 +182,7 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
 
   const { data: currentInvoice, error: currentInvoiceError } = await supabase
     .from("invoices")
-    .select("id, user_id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at, supplier_name, total_cop, due_date, invoice_number, subtotal_cop, iva_cop, extraction_confidence, data_quality_status")
+    .select("id, user_id, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at, supplier_name, total_cop, due_date, invoice_number, subtotal_cop, iva_cop, extraction_confidence, data_quality_status, assigned_to_label")
     .eq("id", invoiceId)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -259,6 +262,12 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
     updatePayload.invoice_number = typeof rawPayload.invoice_number === "string" ? rawPayload.invoice_number.trim() || null : null;
   }
 
+  // --- Assignment label ---
+  if (rawPayload.assigned_to_label !== undefined) {
+    const trimmed = typeof rawPayload.assigned_to_label === "string" ? rawPayload.assigned_to_label.trim().slice(0, 50) || null : null;
+    updatePayload.assigned_to_label = trimmed;
+  }
+
   // Recalculate data quality when data fields change
   if (hasDataFieldEdit) {
     const finalSupplier = updatePayload.supplier_name !== undefined ? updatePayload.supplier_name as string | null : currentInvoice.supplier_name;
@@ -317,7 +326,7 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
     .update(updatePayload)
     .eq("id", invoiceId)
     .eq("user_id", user.id)
-    .select("id, supplier_name, invoice_number, total_cop, due_date, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at, data_quality_status, data_quality_flags, vat_status, vat_reason")
+    .select("id, supplier_name, invoice_number, total_cop, due_date, payment_status, scheduled_payment_date, paid_at, payment_method, payment_notes, payment_url, supplier_portal_url, last_payment_opened_at, data_quality_status, data_quality_flags, vat_status, vat_reason, assigned_to_label")
     .maybeSingle();
 
   if (updateError) {
@@ -346,6 +355,15 @@ export async function PATCH(request: Request, context: InvoicePatchContext) {
         metadata: { from: currentInvoice.data_quality_status, to: updatePayload.data_quality_status },
       });
     }
+  }
+
+  if (rawPayload.assigned_to_label !== undefined && updatePayload.assigned_to_label !== (currentInvoice as Record<string, unknown>).assigned_to_label) {
+    await logInvoiceActivity(supabase, {
+      invoice_id: invoiceId,
+      user_id: user.id,
+      activity: "assignment_changed",
+      metadata: { from: (currentInvoice as Record<string, unknown>).assigned_to_label ?? null, to: updatePayload.assigned_to_label ?? null },
+    });
   }
 
   if (paymentStatus === "paid" && prevStatus !== "paid") {

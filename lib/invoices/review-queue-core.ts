@@ -26,6 +26,7 @@ export type ClassifyInvoiceRow = {
   payment_status: string | null;
   data_quality_status: string | null;
   vat_status: string | null;
+  assigned_to_label: string | null;
 };
 
 export type ReviewQueueItem = {
@@ -38,6 +39,7 @@ export type ReviewQueueItem = {
   payment_status: string | null;
   data_quality_status: string | null;
   vat_status: string | null;
+  assigned_to_label: string | null;
   priority: ReviewPriority;
   reason: string;
   consequence_if_ignored: string;
@@ -104,6 +106,7 @@ export function classifyInvoice(
     payment_status: row.payment_status,
     data_quality_status: row.data_quality_status,
     vat_status: row.vat_status,
+    assigned_to_label: row.assigned_to_label,
     readiness_score: readiness.score,
     readiness_level: readiness.level,
     readiness_reason: readiness.reason,

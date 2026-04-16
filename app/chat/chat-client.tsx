@@ -3,7 +3,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { FileText, CheckCircle, BarChart3, Clock, Upload, CreditCard, Calendar, Edit3, Shield, ExternalLink, History } from "lucide-react";
+import { FileText, CheckCircle, BarChart3, Clock, Upload, CreditCard, Calendar, Edit3, Shield, ExternalLink, History, StickyNote, UserCircle } from "lucide-react";
+import { NotesSection } from "@/components/dashboard/NotesSection";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
@@ -75,12 +76,25 @@ type WeeklyPlanSummary = {
   };
 };
 
+type WeeklyGoalSummary = {
+  headline: string;
+  goals: { id: string; title: string; target_count: number; current_count: number }[];
+};
+
+type InactionScenarioSummary = {
+  headline: string;
+  scenarios: { kind: string; title: string; description: string; severity: "info" | "warning" | "critical"; likely_effects: string[] }[];
+};
+
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   recommended_actions?: RecommendedAction[];
   bulk_recommendations?: BulkRecommendation[];
   weekly_plan?: WeeklyPlanSummary | null;
+  weekly_goals?: WeeklyGoalSummary | null;
+  inaction_summary?: InactionScenarioSummary | null;
+  operating_preferences_active?: { style: string; focus: string | null; view_mode?: string } | null;
 };
 
 type ConfirmActionPayload =
@@ -201,6 +215,7 @@ type InvoiceItem = {
   } | null;
   vat_status: "iva_usable" | "iva_en_revision" | "iva_no_usable" | "sin_iva";
   vat_reason: string | null;
+  assigned_to_label: string | null;
 };
 
 type InvoicesResponse = {
@@ -835,7 +850,7 @@ export function ChatClient({
         throw new Error("No se pudo enviar el mensaje");
       }
 
-      const data: { conversationId: string; reply: string; recommended_actions?: RecommendedAction[]; bulk_recommendations?: BulkRecommendation[]; weekly_plan?: WeeklyPlanSummary | null } = await response.json();
+      const data: { conversationId: string; reply: string; recommended_actions?: RecommendedAction[]; bulk_recommendations?: BulkRecommendation[]; weekly_plan?: WeeklyPlanSummary | null; weekly_goals?: WeeklyGoalSummary | null; inaction_summary?: InactionScenarioSummary | null; operating_preferences_active?: { style: string; focus: string | null; view_mode?: string } | null } = await response.json();
       setConversationId(data.conversationId);
       setMessages((current) => [
         ...current,
@@ -845,6 +860,9 @@ export function ChatClient({
           recommended_actions: data.recommended_actions,
           bulk_recommendations: data.bulk_recommendations,
           weekly_plan: data.weekly_plan,
+          weekly_goals: data.weekly_goals,
+          inaction_summary: data.inaction_summary,
+          operating_preferences_active: data.operating_preferences_active,
         },
       ]);
       if (data.recommended_actions && data.recommended_actions.length > 0) {
@@ -2030,6 +2048,17 @@ export function ChatClient({
                             <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                               Plan de la semana
                             </p>
+                            {messageItem.operating_preferences_active && (
+                              <p className="text-[10px] text-zinc-400 dark:text-zinc-500 italic">
+                                {messageItem.operating_preferences_active.view_mode === "advisor" && "Vista: Asesor"}
+                                {messageItem.operating_preferences_active.view_mode === "advisor" && (messageItem.operating_preferences_active.style !== "balanced" || messageItem.operating_preferences_active.focus) && " · "}
+                                {messageItem.operating_preferences_active.style !== "balanced" &&
+                                  `Estilo ${messageItem.operating_preferences_active.style === "conservative" ? "conservador" : "agresivo"}`}
+                                {messageItem.operating_preferences_active.style !== "balanced" && messageItem.operating_preferences_active.focus && " · "}
+                                {messageItem.operating_preferences_active.focus &&
+                                  `Foco: ${messageItem.operating_preferences_active.focus === "cash" ? "caja" : messageItem.operating_preferences_active.focus === "compliance" ? "cumplimiento" : "limpieza"}`}
+                              </p>
+                            )}
                             <div className="space-y-1.5 text-xs">
                               {messageItem.weekly_plan.this_week.must_pay.length > 0 && (
                                 <div className="flex items-center gap-2">
@@ -2066,6 +2095,24 @@ export function ChatClient({
                                 {messageItem.weekly_plan.cash_scenarios.pay_and_schedule.outflow_scheduled > 0 && (
                                   <p>+ programar todo: <span className="font-medium text-red-600 dark:text-red-400">-{formatCop(messageItem.weekly_plan.cash_scenarios.pay_and_schedule.outflow_now + messageItem.weekly_plan.cash_scenarios.pay_and_schedule.outflow_scheduled)}</span></p>
                                 )}
+                              </div>
+                            )}
+                            {messageItem.weekly_goals && messageItem.weekly_goals.goals.length > 0 && (
+                              <div className="text-[11px] text-zinc-600 dark:text-zinc-400 border-t border-zinc-200 dark:border-zinc-700 pt-1.5 mt-1">
+                                <p className="font-medium">{messageItem.weekly_goals.headline}</p>
+                                {messageItem.weekly_goals.goals.slice(0, 2).map((g) => (
+                                  <p key={g.id} className="text-zinc-500 dark:text-zinc-400">· {g.title}</p>
+                                ))}
+                              </div>
+                            )}
+                            {messageItem.inaction_summary && messageItem.inaction_summary.scenarios.length > 0 && (
+                              <div className="text-[11px] text-amber-700 dark:text-amber-400 border-t border-zinc-200 dark:border-zinc-700 pt-1.5 mt-1">
+                                <p className="font-medium">{messageItem.inaction_summary.headline}</p>
+                                {messageItem.inaction_summary.scenarios.slice(0, 2).map((s) => (
+                                  <p key={s.kind} className="text-amber-600 dark:text-amber-400">
+                                    {s.severity === "critical" ? "⚠ " : "· "}{s.title}
+                                  </p>
+                                ))}
                               </div>
                             )}
                             <Button
@@ -2508,8 +2555,65 @@ export function ChatClient({
                         <div><span className="font-medium">IVA:</span> {(() => { const v = getInvoiceExtractedField(detailsInvoice, "iva_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
                         <div><span className="font-medium">Total:</span> {detailsInvoice.total_cop !== null ? formatCop(detailsInvoice.total_cop) : (() => { const v = getInvoiceExtractedField(detailsInvoice, "total_cop"); const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n) ? formatCop(n) : "—"; })()}</div>
                         <div><span className="font-medium">Moneda:</span> {String(getInvoiceExtractedField(detailsInvoice, "currency") ?? "—")}</div>
+                        <div><span className="font-medium">Responsable:</span> {detailsInvoice.assigned_to_label ?? "Sin asignar"}</div>
                       </div>
                     )}
+
+                    {/* Assignment selector */}
+                    <div className="mt-3 rounded-md border border-border p-3 text-xs">
+                      <p className="mb-2 font-semibold flex items-center gap-1.5">
+                        <UserCircle className="w-3.5 h-3.5 text-muted" />
+                        Asignar responsable
+                      </p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {(["Yo", "Asesor"] as const).map((label) => (
+                          <button
+                            key={label}
+                            type="button"
+                            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                              detailsInvoice.assigned_to_label === label
+                                ? "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 ring-1 ring-violet-300 dark:ring-violet-700"
+                                : "bg-surface-secondary text-muted hover:text-foreground"
+                            }`}
+                            onClick={async () => {
+                              const prev = detailsInvoice.assigned_to_label;
+                              const next = prev === label ? null : label;
+                              setDetailsInvoice({ ...detailsInvoice, assigned_to_label: next });
+                              setInvoices((inv) => inv.map((i) => i.id === detailsInvoice.id ? { ...i, assigned_to_label: next } : i));
+                              await fetch(`/api/invoices/${detailsInvoice.id}`, {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ assigned_to_label: next }),
+                              });
+                            }}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                        <form className="flex items-center gap-1" onSubmit={async (e) => {
+                          e.preventDefault();
+                          const input = (e.currentTarget.elements.namedItem("customLabel") as HTMLInputElement);
+                          const val = input.value.trim().slice(0, 50) || null;
+                          if (!val) return;
+                          setDetailsInvoice({ ...detailsInvoice, assigned_to_label: val });
+                          setInvoices((inv) => inv.map((i) => i.id === detailsInvoice.id ? { ...i, assigned_to_label: val } : i));
+                          input.value = "";
+                          await fetch(`/api/invoices/${detailsInvoice.id}`, {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ assigned_to_label: val }),
+                          });
+                        }}>
+                          <input name="customLabel" type="text" maxLength={50} placeholder="Otro…" className="w-24 rounded-md border border-border bg-surface px-2 py-1 text-xs" />
+                          <button type="submit" className="rounded-md bg-surface-secondary px-2 py-1 text-xs text-muted hover:text-foreground">OK</button>
+                        </form>
+                        {detailsInvoice.assigned_to_label && detailsInvoice.assigned_to_label !== "Yo" && detailsInvoice.assigned_to_label !== "Asesor" && (
+                          <span className="rounded-full bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 ring-1 ring-violet-300 dark:ring-violet-700 px-3 py-1 text-xs font-medium">
+                            {detailsInvoice.assigned_to_label}
+                          </span>
+                        )}
+                      </div>
+                    </div>
 
                     <div className="mt-4 rounded-md border border-border p-3 text-xs">
                       <p className="mb-2 font-semibold">Confidence</p>
@@ -2543,6 +2647,15 @@ export function ChatClient({
                           ))}
                         </div>
                       )}
+                    </div>
+
+                    {/* Notas internas */}
+                    <div className="mt-4 rounded-md border border-border p-3 text-xs">
+                      <p className="mb-2 font-semibold flex items-center gap-1.5">
+                        <StickyNote className="w-3.5 h-3.5 text-muted" />
+                        Notas internas
+                      </p>
+                      <NotesSection targetType="invoice" targetId={detailsInvoice.id} />
                     </div>
                   </div>
                 </div>

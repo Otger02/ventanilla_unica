@@ -36,7 +36,7 @@ export async function getReviewQueue(params: {
 
   const { data: invoices, error } = await supabase
     .from("invoices")
-    .select("id, supplier_name, invoice_number, total_cop, iva_cop, due_date, payment_status, data_quality_status, vat_status")
+    .select("id, supplier_name, invoice_number, total_cop, iva_cop, due_date, payment_status, data_quality_status, vat_status, assigned_to_label")
     .eq("user_id", userId);
 
   if (error) throw error;

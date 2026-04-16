@@ -9,7 +9,8 @@ export type InvoiceActivity =
   | "rescheduled"
   | "marked_paid"
   | "receipt_uploaded"
-  | "manually_edited";
+  | "manually_edited"
+  | "assignment_changed";
 
 export async function logInvoiceActivity(
   supabase: SupabaseClient,
