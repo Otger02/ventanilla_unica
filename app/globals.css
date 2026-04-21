@@ -1,28 +1,29 @@
 @import "tailwindcss";
 
 :root {
-  --background: #fafafa;
-  --foreground: #1a1a2e;
+  --background: #ffffff;
+  --foreground: #111111;
   --surface: #ffffff;
-  --surface-secondary: #f4f4f5;
-  --border: #e4e4e7;
-  --border-subtle: #f0f0f3;
-  --muted: #71717a;
-  --accent: #4f46e5;
-  --accent-soft: #eef2ff;
+  --surface-secondary: #f5f5f5;
+  --border: #dddddd;
+  --border-subtle: #eeeeee;
+  --muted: #999999;
+  --accent: #E8001C;
+  --accent-soft: #fff0f0;
 }
 
+/* Force light mode — no dark palette for La República aesthetic */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #1c1c27;
-    --foreground: #e8e8ed;
-    --surface: #252533;
-    --surface-secondary: #2a2a3a;
-    --border: #3a3a4e;
-    --border-subtle: #32324a;
-    --muted: #9898a8;
-    --accent: #818cf8;
-    --accent-soft: rgba(99, 102, 241, 0.12);
+    --background: #ffffff;
+    --foreground: #111111;
+    --surface: #ffffff;
+    --surface-secondary: #f5f5f5;
+    --border: #dddddd;
+    --border-subtle: #eeeeee;
+    --muted: #999999;
+    --accent: #E8001C;
+    --accent-soft: #fff0f0;
   }
 }
 
@@ -47,15 +48,15 @@ body {
 }
 
 .scroll-panel::-webkit-scrollbar {
-  width: 6px;
+  width: 5px;
 }
 .scroll-panel::-webkit-scrollbar-track {
   background: transparent;
 }
 .scroll-panel::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
+  background: #E8001C;
+  border-radius: 0;
 }
 .scroll-panel::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
+  background: #b8001a;
 }

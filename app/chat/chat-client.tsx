@@ -1659,26 +1659,30 @@ export function ChatClient({
 
   return (
     <PageShell className="!h-[100dvh] flex flex-col overflow-hidden !px-0 !py-0 sm:!px-0 !max-w-none">
-      {/* Header de Identidad (Top Bar) */}
-      <div className="flex-none bg-surface border-b border-border px-4 md:px-6 py-3 flex items-center justify-between z-50 shadow-sm relative">
-        <div>
-          {entityName && entityNit ? (
-            <>
-              <h1 className="text-xl md:text-2xl font-bold tracking-tight text-foreground">{entityName}</h1>
-              <p className="text-xs md:text-sm font-medium text-muted">
-                NIT: {entityNit} {isEsal ? " | ESAL" : ""}
-              </p>
-            </>
-          ) : (
-            <div className="animate-pulse flex flex-col gap-1.5">
-               <div className="h-6 w-64 bg-surface-secondary rounded"></div>
-               <div className="h-4 w-32 bg-surface-secondary rounded"></div>
+      {/* Header — La República identity bar */}
+      <div className="flex-none bg-white px-4 md:px-6 py-3 flex items-center justify-between z-50 relative" style={{ borderBottom: "2px solid #E8001C" }}>
+        {/* LR logo + title */}
+        <div className="flex items-center gap-3">
+          <div style={{ background: "#E8001C", color: "#fff", fontWeight: 900, fontSize: "20px", padding: "4px 10px", fontFamily: "Georgia, serif", lineHeight: 1, flexShrink: 0 }}>
+            LR
+          </div>
+          <div>
+            <div style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: "17px", color: "#000", lineHeight: 1.2 }}>
+              Asistente Financiero
             </div>
-          )}
+            {entityName && entityNit ? (
+              <p className="text-[11px] text-[#999]">{entityName} · NIT: {entityNit}{isEsal ? " | ESAL" : ""}</p>
+            ) : (
+              <div className="animate-pulse flex gap-2">
+                <div className="h-3 w-36 bg-[#F5F5F5] rounded"></div>
+              </div>
+            )}
+          </div>
         </div>
-        <div className="flex gap-3 items-center">
+        {/* Right actions */}
+        <div className="flex gap-2 items-center">
           <Link href="/dashboard">
-            <Button variant="outline" size="sm" className="hidden md:flex gap-2 bg-accent-soft text-accent border-accent/20 hover:bg-accent/10">
+            <Button variant="outline" size="sm" className="hidden md:flex gap-2 bg-white text-[#E8001C] border-[#E8001C] hover:bg-[#E8001C] hover:text-white">
               <BarChart3 className="w-4 h-4" /> Dashboard
               {alertCount > 0 && (
                 <span className={`inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${alertCritical > 0 ? "bg-red-500 text-white" : "bg-amber-500 text-white"}`}>
@@ -1687,7 +1691,7 @@ export function ChatClient({
               )}
             </Button>
           </Link>
-          <div className="hidden sm:inline-flex items-center justify-center px-3 py-1 text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 rounded-full border border-emerald-200 dark:border-emerald-800">
+          <div className="hidden sm:inline-flex items-center justify-center px-3 py-1 text-xs font-bold bg-white text-[#E8001C] border border-[#E8001C] uppercase tracking-wide">
             <CheckCircle className="w-3.5 h-3.5 mr-1" /> Perfil Activo
           </div>
           {!demoMode ? (
@@ -1697,6 +1701,7 @@ export function ChatClient({
               variant="outline"
               size="sm"
               disabled={isSigningOut}
+              className="bg-white text-[#E8001C] border-[#E8001C] hover:bg-[#E8001C] hover:text-white"
             >
               {isSigningOut ? "Cerrando..." : "Cerrar sesión"}
             </Button>
@@ -1737,19 +1742,20 @@ export function ChatClient({
              </div>
           )}
 
-          <div className="flex-none px-5 py-3.5 border-b border-border flex items-center justify-between bg-surface-secondary">
+          <div className="flex-none px-5 py-3 border-b border-[#DDDDDD] flex items-center justify-between bg-white" style={{ borderTop: "3px solid #E8001C" }}>
             <div>
-              <h2 className="text-[15px] font-semibold text-foreground flex items-center gap-2">Asistente Virtual (CFO)</h2>
-              <p className="text-[12px] text-muted mt-0.5">Haz consultas o arrastra documentos al panel.</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-[#E8001C] mb-0.5">● ASISTENTE VIRTUAL</p>
+              <h2 className="text-[16px] font-bold text-[#111] flex items-center gap-2" style={{ fontFamily: "Georgia, serif" }}>Asistente Virtual (CFO)</h2>
+              <p className="text-[12px] text-[#999] mt-0.5">Haz consultas o arrastra documentos al panel.</p>
             </div>
             {demoMode ? (
-              <span className="rounded-md border border-amber-400 bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
-                DEMO MODE
+              <span className="border border-[#E8001C] px-2 py-0.5 text-[10px] font-bold text-[#E8001C] uppercase tracking-widest">
+                DEMO
               </span>
             ) : null}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-5 flex flex-col scroll-panel bg-background">
+          <div className="flex-1 overflow-y-auto p-5 flex flex-col scroll-panel bg-[#F5F5F5]">
             {showDemoDebug ? (
               <div className="mb-4 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-100 shrink-0">
                 DEMO DEBUG → process.env.DEMO_MODE: {demoModeRawEnv} | demoMode(): {String(demoMode)}
@@ -1758,7 +1764,7 @@ export function ChatClient({
 
             {messages.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center text-center opacity-80">
-                 <p className="text-[14px] text-zinc-500 dark:text-zinc-400 max-w-[280px]">
+                 <p className="text-[14px] text-[#999] max-w-[280px]">
                    Hola, soy tu CFO virtual. Tráeme tus dudas tributarias o suelta una factura aquí para empezar.
                  </p>
               </div>
@@ -2131,7 +2137,7 @@ export function ChatClient({
                 );
               })}
               {isSending ? (
-                <li className="max-w-[85%] rounded-lg bg-zinc-100 px-3 py-2 text-sm text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
+                <li className="max-w-[75%] bg-white px-4 py-3 text-sm text-[#111]" style={{ borderLeft: "3px solid #E8001C", borderRadius: "4px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
                   escribiendo...
                 </li>
               ) : null}
@@ -2140,13 +2146,13 @@ export function ChatClient({
             <div ref={messagesEndRef} />
           </div>
 
-          <div className="flex-none p-4 pb-5 border-t border-border bg-surface">
+          <div className="flex-none p-4 pb-5 border-t border-[#DDDDDD] bg-white">
             {messages.length === 0 && (
               <div className="mb-4 space-y-2">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Sugerencias rápidas</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#E8001C]">Sugerencias rápidas</p>
                 <div className="flex flex-wrap gap-2">
                   {exampleQuestions.map((q) => (
-                    <button key={q} type="button" onClick={() => void sendMessage(q)} disabled={isSending} className="rounded-full border border-border bg-surface-secondary px-3 py-[5px] text-[12px] font-medium text-muted transition hover:border-accent/30 hover:bg-accent-soft disabled:opacity-60">
+                    <button key={q} type="button" onClick={() => void sendMessage(q)} disabled={isSending} className="border border-[#E8001C] bg-white px-3 py-[5px] text-[12px] font-medium text-[#E8001C] transition hover:bg-[#E8001C] hover:text-white disabled:opacity-60" style={{ borderRadius: "2px" }}>
                       {q}
                     </button>
                   ))}
@@ -2159,7 +2165,8 @@ export function ChatClient({
                  onChange={(event) => setInput(event.target.value)}
                  placeholder="Escribe tu mensaje..."
                  title="Mensaje para el CFO Virtual"
-                 className="flex-1 rounded-lg border border-border px-4 py-2.5 text-[14px] text-foreground bg-surface-secondary outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-sm transition-all"
+                 className="flex-1 border border-[#DDDDDD] px-4 py-2.5 text-[14px] text-[#111] bg-white outline-none focus:border-[#E8001C] focus:ring-2 focus:ring-[#E8001C]/20 shadow-sm transition-all placeholder:text-[#999]"
+                 style={{ borderRadius: "4px" }}
                  disabled={isSending}
                />
                <Button type="submit" variant="primary" size="md" disabled={isSending} className="px-6 rounded-lg font-medium">
