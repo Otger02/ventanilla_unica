@@ -11,7 +11,7 @@ export function getGeminiConfig() {
   const model =
     process.env.GEMINI_MODEL?.trim() ||
     process.env.GOOGLE_MODEL?.trim() ||
-    "gemini-3-flash-preview";
+    "gemini-2.0-flash";
 
   return {
     apiKey,

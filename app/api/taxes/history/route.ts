@@ -104,14 +104,29 @@ export async function GET(request: NextRequest) {
           return null;
         }
 
+        const b = result.breakdown;
+
+        if ("totalProvision" in b) {
+          return {
+            year: row.year,
+            month: row.month,
+            income_cop: row.income_cop,
+            deductible_expenses_cop: row.deductible_expenses_cop,
+            totalProvision: b.totalProvision,
+            cashAfterProvision: b.cashAfterProvision,
+            riskLevel: b.riskLevel,
+          };
+        }
+
+        // Juridica ordinario breakdown
         return {
           year: row.year,
           month: row.month,
           income_cop: row.income_cop,
           deductible_expenses_cop: row.deductible_expenses_cop,
-          totalProvision: result.breakdown.totalProvision,
-          cashAfterProvision: result.breakdown.cashAfterProvision,
-          riskLevel: result.breakdown.riskLevel,
+          totalProvision: b.total_provision_mvp,
+          cashAfterProvision: row.income_cop - row.deductible_expenses_cop - b.total_provision_mvp,
+          riskLevel: (row.income_cop - row.deductible_expenses_cop - b.total_provision_mvp) < 0 ? "high" as const : "low" as const,
         };
       })
       .filter((item): item is NonNullable<typeof item> => item !== null);

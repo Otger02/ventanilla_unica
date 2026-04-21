@@ -14,24 +14,37 @@ type MonthlyTaxInputsCO = {
 
 type ProvisionRiskLevel = "high" | "medium" | "low";
 
+type NaturalBreakdown = {
+  ivaProvision: number;
+  ivaMethod: "vat_collected_as_proxy";
+  ivaNote: string;
+  base: number;
+  rentaProvision: number;
+  rentaMethod: "simplified_monthly_provision";
+  rentaRateBase: number;
+  provisionStyle: "conservative" | "balanced" | "aggressive";
+  provisionFactor: number;
+  rentaNote: string;
+  withholdingsNote: string;
+  totalProvision: number;
+  cashAfterProvision: number;
+  riskLevel: ProvisionRiskLevel;
+};
+
+type JuridicaOrdinarioBreakdown = {
+  iva_to_separate: number;
+  ingreso_base_sin_iva: number;
+  utilidad_estimada: number;
+  renta_bruta_estimada: number;
+  renta_neta_estimada: number;
+  total_provision_mvp: number;
+  method: "mvp_juridica_ordinario_v1";
+  notes: string;
+};
+
 type MonthlyProvisionSuccess = {
   ok: true;
-  breakdown: {
-    ivaProvision: number;
-    ivaMethod: "vat_collected_as_proxy";
-    ivaNote: string;
-    base: number;
-    rentaProvision: number;
-    rentaMethod: "simplified_monthly_provision";
-    rentaRateBase: number;
-    provisionStyle: "conservative" | "balanced" | "aggressive";
-    provisionFactor: number;
-    rentaNote: string;
-    withholdingsNote: string;
-    totalProvision: number;
-    cashAfterProvision: number;
-    riskLevel: ProvisionRiskLevel;
-  };
+  breakdown: NaturalBreakdown | JuridicaOrdinarioBreakdown;
 };
 
 type MonthlyProvisionError = {
@@ -45,10 +58,34 @@ export function calculateMonthlyProvisionCO(
   profile: UserTaxProfileCO,
   inputs: MonthlyTaxInputsCO,
 ): MonthlyProvisionResult {
+  // --- Juridica + ordinario: MVP breakdown ---
+  if (profile.persona_type === "juridica" && profile.regimen === "ordinario") {
+    const ivaToSeparate = inputs.vat_collected_cop > 0 ? inputs.vat_collected_cop : 0;
+    const ingresoBaseSinIva = inputs.income_cop - inputs.vat_collected_cop;
+    const utilidadEstimada = ingresoBaseSinIva - inputs.deductible_expenses_cop;
+    const rentaBrutaEstimada = Math.max(utilidadEstimada, 0) * 0.35;
+    const rentaNetaEstimada = Math.max(rentaBrutaEstimada - inputs.withholdings_cop, 0);
+    const totalProvisionMvp = ivaToSeparate + rentaNetaEstimada;
+
+    return {
+      ok: true,
+      breakdown: {
+        iva_to_separate: ivaToSeparate,
+        ingreso_base_sin_iva: ingresoBaseSinIva,
+        utilidad_estimada: utilidadEstimada,
+        renta_bruta_estimada: rentaBrutaEstimada,
+        renta_neta_estimada: rentaNetaEstimada,
+        total_provision_mvp: totalProvisionMvp,
+        method: "mvp_juridica_ordinario_v1" as const,
+        notes: "Estimación MVP basada en FINANCIAL_CONTEXT; no reemplaza cierre contable oficial.",
+      },
+    };
+  }
+
   if (profile.persona_type !== "natural") {
     return {
       ok: false,
-      error: "Solo se soporta persona natural en esta version MVP.",
+      error: "Solo se soporta persona natural o jurídica ordinario en esta versión.",
     };
   }
 

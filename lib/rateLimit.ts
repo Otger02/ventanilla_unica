@@ -1,4 +1,4 @@
-const requestLog = new Map<string, number[]>();
+export const requestLog = new Map<string, number[]>();
 
 export type RateLimitResult = {
   allowed: boolean;
@@ -30,6 +30,13 @@ export function checkRateLimit(
 ): RateLimitResult {
   const now = Date.now();
   const windowStart = now - windowMs;
+
+  // Cleanup: remove entries where all timestamps are outside the window
+  for (const [entryKey, timestamps] of requestLog) {
+    if (timestamps.every((t) => t <= windowStart)) {
+      requestLog.delete(entryKey);
+    }
+  }
 
   const recentRequests = (requestLog.get(key) ?? []).filter(
     (timestamp) => timestamp > windowStart,
