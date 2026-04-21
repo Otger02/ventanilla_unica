@@ -62,9 +62,9 @@ export function TaxTimeline() {
     const diffTime = due.getTime() - currentDate.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-    if (diffDays < 5) return "bg-red-100 border-red-500 text-red-800 dark:bg-red-950 dark:border-red-800 dark:text-red-200";
-    if (diffDays <= 15) return "bg-amber-100 border-amber-500 text-amber-800 dark:bg-amber-950 dark:border-amber-800 dark:text-amber-200";
-    return "bg-emerald-100 border-emerald-500 text-emerald-800 dark:bg-emerald-950 dark:border-emerald-800 dark:text-emerald-200";
+    if (diffDays < 5) return "bg-[#FFF5F5] border-[#E8001C] text-[#E8001C]";
+    if (diffDays <= 15) return "bg-[#FFFBF0] border-[#F5A623] text-[#B36B00]";
+    return "bg-[#F0FFF4] border-[#27AE60] text-[#1A7A44]";
   };
   
   const getStatusIcon = (dueDateStr: string) => {

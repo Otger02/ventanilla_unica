@@ -1667,7 +1667,7 @@ export function ChatClient({
             LR
           </div>
           <div>
-            <div style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: "17px", color: "#000", lineHeight: 1.2 }}>
+            <div style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: "18px", color: "#000", lineHeight: 1.2 }}>
               Asistente Financiero
             </div>
             {entityName && entityNit ? (
@@ -3147,7 +3147,7 @@ export function ChatClient({
               value={monthlyFixedCostsCop}
               onChange={(event) => setMonthlyFixedCostsCop(event.target.value)}
               title="Gastos fijos mensuales en pesos colombianos"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-[#DDDDDD] px-2 py-2 text-right text-sm bg-white text-[#111]"
               placeholder="14.800.000"
               disabled={isLoadingTaxData || isSavingTaxData}
             />
@@ -3160,7 +3160,7 @@ export function ChatClient({
               value={monthlyPayrollCop}
               onChange={(event) => setMonthlyPayrollCop(event.target.value)}
               title="Nómina mensual en pesos colombianos"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-[#DDDDDD] px-2 py-2 text-right text-sm bg-white text-[#111]"
               placeholder="14.800.000"
               disabled={isLoadingTaxData || isSavingTaxData}
             />
@@ -3173,7 +3173,7 @@ export function ChatClient({
               value={monthlyDebtPaymentsCop}
               onChange={(event) => setMonthlyDebtPaymentsCop(event.target.value)}
               title="Cuotas o deuda mensual en pesos colombianos"
-              className="w-full rounded-md border border-zinc-300 px-2 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded-md border border-[#DDDDDD] px-2 py-2 text-right text-sm bg-white text-[#111]"
               placeholder="14.800.000"
               disabled={isLoadingTaxData || isSavingTaxData}
             />

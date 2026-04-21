@@ -609,13 +609,13 @@ export default function DashboardPage() {
             {/* Row 1: KPIs principales */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6" style={{ order: isAdvisor ? 10 : 6 }}>
               {/* Total pendiente */}
-              <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm flex flex-col">
+              <div className="bg-surface border border-[#EEEEEE] rounded-2xl p-6 shadow-sm flex flex-col">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-medium text-muted">
                     Total Pendiente
                   </h3>
-                  <div className="bg-red-100 dark:bg-red-900/40 p-2 rounded-lg">
-                    <DollarSign className="w-5 h-5 text-red-600 dark:text-red-400" />
+                  <div className="bg-red-100 p-2 rounded-lg">
+                    <DollarSign className="w-5 h-5 text-red-600" />
                   </div>
                 </div>
                 <div className="text-3xl font-bold text-foreground">
@@ -624,16 +624,16 @@ export default function DashboardPage() {
               </div>
 
               {/* Vencidas */}
-              <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm flex flex-col">
+              <div className="bg-surface border border-[#EEEEEE] rounded-2xl p-6 shadow-sm flex flex-col">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-medium text-muted">
                     Vencidas
                   </h3>
-                  <div className="bg-amber-100 dark:bg-amber-900/40 p-2 rounded-lg">
-                    <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                  <div className="bg-amber-100 p-2 rounded-lg">
+                    <AlertTriangle className="w-5 h-5 text-amber-600" />
                   </div>
                 </div>
-                <div className="text-3xl font-bold text-red-600 dark:text-red-400">
+                <div className="text-3xl font-bold text-red-600">
                   {summary.overdue_count}
                 </div>
                 <p className="text-sm text-muted mt-1">
@@ -642,16 +642,16 @@ export default function DashboardPage() {
               </div>
 
               {/* Pagado este mes */}
-              <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm flex flex-col">
+              <div className="bg-surface border border-[#EEEEEE] rounded-2xl p-6 shadow-sm flex flex-col">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-medium text-muted">
                     Pagado Este Mes
                   </h3>
-                  <div className="bg-emerald-100 dark:bg-emerald-900/40 p-2 rounded-lg">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                  <div className="bg-emerald-100 p-2 rounded-lg">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
                   </div>
                 </div>
-                <div className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">
+                <div className="text-3xl font-bold text-emerald-600">
                   {formatCOP(summary.paid_this_month_total)}
                 </div>
               </div>
@@ -968,8 +968,8 @@ const alertIconMap = {
 };
 
 const severityStyles = {
-  critical: "border-red-200 bg-red-50 dark:border-red-900/30 dark:bg-red-950/40",
-  warning: "border-amber-200 bg-amber-50 dark:border-amber-900/30 dark:bg-amber-950/40",
+  critical: "bg-white",
+  warning: "bg-white",
   info: "border-border bg-surface-secondary",
 };
 
@@ -990,7 +990,13 @@ function AlertRow({ alert }: { alert: AlertItem }) {
   const Icon = alertIconMap[alert.type] ?? AlertTriangle;
 
   return (
-    <div className={`flex items-center gap-3 rounded-xl border p-3 ${severityStyles[alert.severity]}`}>
+    <div
+      className={`flex items-center gap-3 rounded-xl border p-3 ${severityStyles[alert.severity]}`}
+      style={{
+        borderLeft: alert.severity === "critical" ? "4px solid #E8001C" : alert.severity === "warning" ? "4px solid #F5A623" : undefined,
+        boxShadow: alert.severity !== "info" ? "0 1px 3px rgba(0,0,0,0.08)" : undefined,
+      }}
+    >
       <Icon className={`w-4 h-4 flex-none ${severityIconStyles[alert.severity]}`} />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-foreground truncate">{alert.title}</p>
@@ -1024,9 +1030,9 @@ const badgeStyles: Record<ReviewQueueItem["badge_color"], string> = {
 };
 
 const badgeBorderStyles: Record<ReviewQueueItem["badge_color"], string> = {
-  red: "border-red-200 bg-red-50/50 dark:border-red-900/30 dark:bg-red-950/30",
-  orange: "border-amber-200 bg-amber-50/50 dark:border-amber-900/30 dark:bg-amber-950/30",
-  blue: "border-blue-200 bg-blue-50/50 dark:border-blue-900/30 dark:bg-blue-950/30",
+  red: "bg-white",
+  orange: "bg-white",
+  blue: "bg-white",
   grey: "border-border bg-surface-secondary",
 };
 
@@ -1074,7 +1080,13 @@ function ReviewQueueRow({ item, formatCOP, isSelected, onToggle }: { item: Revie
   const ConfIcon = confidenceIcons[rowConf];
 
   return (
-    <div className={`flex items-center gap-3 rounded-xl border p-3 ${badgeBorderStyles[item.badge_color]}`}>
+    <div
+      className={`flex items-center gap-3 rounded-xl border p-3 ${badgeBorderStyles[item.badge_color]}`}
+      style={{
+        borderLeft: item.badge_color === "red" ? "4px solid #E8001C" : item.badge_color === "orange" ? "4px solid #F5A623" : item.badge_color === "blue" ? "4px solid #3B82F6" : undefined,
+        boxShadow: item.badge_color !== "grey" ? "0 1px 3px rgba(0,0,0,0.08)" : undefined,
+      }}
+    >
       <input
         type="checkbox"
         className="w-4 h-4 accent-accent flex-none"
