@@ -7,6 +7,7 @@ import { logChatRequest } from "@/lib/logger";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { getGeminiConfig } from "@/lib/ai/gemini";
 import { KB_CFO_SNIPPETS } from "@/lib/kb/cfo-estrategias";
+import { detectCcIntent, selectCcSnippets } from "@/lib/kb/camara-comercio";
 import { getPayablesSummary } from "@/lib/invoices/getPayablesSummary";
 import { classifyInvoices, type ReviewQueueItem } from "@/lib/invoices/getReviewQueue";
 import { computeWeeklyGoals } from "@/lib/invoices/getWeeklyGoals";
@@ -148,6 +149,7 @@ export async function POST(request: NextRequest) {
     const selectedKbSnippets = financialIntent.enabled ? selectKbSnippets(normalizedMessage, KB_CFO_SNIPPETS, financialIntent.reason) : [];
     const kbSnippetsForModel = hardenKbSnippets(selectedKbSnippets);
     const kbSnippetIdsUsed = kbSnippetsForModel.map((snippet) => snippet.id);
+    const ccKbSnippets = detectCcIntent(normalizedMessage) ? selectCcSnippets(normalizedMessage) : [];
 
     let calcActualPayload: CurrentTaxCalculation | null = null;
     let invoicesPrioritySummary: InvoicesPrioritySummary | null = null;
@@ -241,6 +243,7 @@ export async function POST(request: NextRequest) {
       operationalNotes,
       kbSnippetsForModel,
       kbSnippetIdsUsed,
+      ccKbSnippets,
       calcActualPayload,
       invoicesPrioritySummary,
       weeklyPlanPayload,

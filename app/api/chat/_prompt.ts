@@ -20,6 +20,7 @@ import { getBulkRecommendations } from "@/lib/invoices/getBulkRecommendations";
 import { buildPaymentPlan, type WeeklyPaymentPlan } from "@/lib/invoices/getPaymentPlan";
 import { getTopPriorityActions, type ReviewQueueItem } from "@/lib/invoices/getReviewQueue";
 import type { KB_CFO_SNIPPETS } from "@/lib/kb/cfo-estrategias";
+import type { KB_CC_SNIPPETS } from "@/lib/kb/camara-comercio";
 
 const KB_RESUMEN = {
   impuestos_basicos: [
@@ -104,6 +105,7 @@ export type BuildChatPromptContext = {
   operationalNotes: { target_type: string; target_id: string | null; author_label: string; content: string; created_at: string }[];
   kbSnippetsForModel: typeof KB_CFO_SNIPPETS;
   kbSnippetIdsUsed: string[];
+  ccKbSnippets: typeof KB_CC_SNIPPETS;
   calcActualPayload: CurrentTaxCalculation | null;
   invoicesPrioritySummary: InvoicesPrioritySummary | null;
   weeklyPlanPayload: WeeklyPaymentPlan | null;
@@ -495,6 +497,21 @@ export function buildChatPrompt(ctx: BuildChatPromptContext): string {
         "Regla 12 (Markdown): Mantener siempre saltos de línea y secciones separadas con encabezados '## (1)'...'## (4)'.",
         "Seguridad: Nunca sugerir evasión, ocultamiento de ingresos, facturación falsa ni prácticas ilegales."
       ].join("\n"),
+    );
+  }
+
+  if (ctx.ccKbSnippets.length > 0) {
+    const ccText = ctx.ccKbSnippets
+      .map((snippet, index) => `${index + 1}) ${snippet.title}\n${snippet.content}`)
+      .join("\n\n");
+    promptSections.push(
+      [
+        "KB_CAMARA_COMERCIO:",
+        ccText,
+        "INSTRUCCION_CC:",
+        "Usa esta información para responder preguntas sobre matrícula mercantil, renovación, usuario SII, RUES o Cámara de Comercio.",
+        "Recuerda siempre: la Cámara de Comercio NO gestiona obligaciones tributarias (IVA, renta, retenciones) — eso es DIAN.",
+      ].join("\n")
     );
   }
 
